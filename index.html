@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Almathar Hospital — Simulation Readiness Tracker</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/tabler-icons.min.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div>
+        <h1>Almathar Hospital — Simulation Readiness Tracker</h1>
+        <div class="sub">Phase 1 commissioning · weekly executive review</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:16px;">
+        <div id="identity-badge" style="display:flex; align-items:center; gap:6px;"></div>
+        <nav class="tabs">
+          <button onclick="setTab('capture')" id="tab-capture">Capture</button>
+          <button onclick="setTab('inbox')" id="tab-inbox">Team inbox</button>
+          <button onclick="setTab('dashboard')" id="tab-dashboard">Dashboard</button>
+        </nav>
+      </div>
+    </header>
+
+    <div id="config-banner"></div>
+    <main>
+      <section id="view-capture"></section>
+      <section id="view-inbox" style="display:none;"></section>
+      <section id="view-dashboard" style="display:none;"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- Access gate (shared password) -->
+  <div id="access-overlay" style="display:none;">
+    <div class="identity-modal">
+      <h2 style="margin:0 0 8px; font-size:18px;">Almathar Hospital — Simulation Readiness Tracker</h2>
+      <p style="margin:0 0 14px; font-size:13px; color:var(--text-2);">Please enter the access password to continue.</p>
+      <input id="access-input" type="password" placeholder="Password" autocomplete="off">
+      <div id="access-error" style="display:none; color:var(--danger); font-size:12px; margin-top:8px;">Incorrect password. Please try again.</div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button class="primary" onclick="submitAccessPassword()"><i class="ti ti-check"></i> Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Identity prompt -->
+  <div id="identity-overlay" style="display:none;">
+    <div class="identity-modal">
+      <h2 style="margin:0 0 8px; font-size:18px;">Welcome — please introduce yourself</h2>
+      <p style="margin:0 0 14px; font-size:13px; color:var(--text-2);">Your name and staff ID will be recorded against every gap you log and every change you make. This is for accountability and the CBAHI audit trail.</p>
+      <div style="display:grid; grid-template-columns:2fr 1fr; gap:10px;">
+        <div>
+          <label>Full name</label>
+          <input id="identity-name" type="text" placeholder="e.g. Dr. Moath Homiad">
+        </div>
+        <div>
+          <label>Staff ID</label>
+          <input id="identity-staffid" type="text" inputmode="numeric" pattern="\d*" placeholder="12345">
+        </div>
+      </div>
+      <div id="identity-error" style="display:none; color:var(--danger); font-size:12px; margin-top:8px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button class="primary" onclick="submitIdentity()"><i class="ti ti-check"></i> Continue</button>
+      </div>
+      <p style="margin:14px 0 0; font-size:11px; color:var(--text-3);">Saved on this device. Use the edit icon in the header to change later.</p>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
