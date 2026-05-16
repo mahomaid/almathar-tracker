@@ -1,15 +1,23 @@
-// Almathar Simulation Readiness Tracker — frontend v3
-// Adds: name + staff ID identity, password gate, combobox assigned-to with new-entry support
+
+// Almathar Simulation Readiness Tracker — frontend v5
+// New in v5:
+//   - Quick log is the only capture mode (Full form removed)
+//   - Sim ID = area code dropdown + free serial (e.g. OP + 005 -> OP-005)
+//   - Day-1 stopper toggle on every gap
+//   - One photo per gap, uploaded to Drive via Apps Script
+//   - Dashboard prominently shows Day-1 stoppers count
+
+const AREA_CODES = ['ED', 'IP', 'OP', 'ICU', 'OR', 'Radiology', 'Lab', 'Pharmacy', 'Maternity', 'Admin'];
 
 const DOMAINS = [
-  { id: 'billing',    label: 'Billing & Registration',     icon: 'ti-receipt',       ramp: 'blue'   },
-  { id: 'nursing',    label: 'Clinical & Nursing',         icon: 'ti-stethoscope',   ramp: 'teal'   },
-  { id: 'physicians', label: 'Medical Team (Physicians)',  icon: 'ti-user-heart',    ramp: 'purple' },
-  { id: 'it',         label: 'IT & Systems',               icon: 'ti-device-desktop',ramp: 'coral'  },
-  { id: 'lab',        label: 'Laboratory',                 icon: 'ti-test-pipe',     ramp: 'pink'   },
-  { id: 'radiology',  label: 'Radiology',                  icon: 'ti-radioactive',   ramp: 'amber'  },
-  { id: 'infra',      label: 'Infrastructure',             icon: 'ti-building',      ramp: 'gray'   },
-  { id: 'safety',     label: 'Patient Safety & Quality',   icon: 'ti-shield-check',  ramp: 'green'  }
+  { id: 'billing',    label: 'Billing & Registration',     short: 'Billing',    icon: 'ti-receipt',       ramp: 'blue'   },
+  { id: 'nursing',    label: 'Clinical & Nursing',         short: 'Nursing',    icon: 'ti-stethoscope',   ramp: 'teal'   },
+  { id: 'physicians', label: 'Medical Team (Physicians)',  short: 'Physicians', icon: 'ti-user-heart',    ramp: 'purple' },
+  { id: 'it',         label: 'IT & Systems',               short: 'IT',         icon: 'ti-device-desktop',ramp: 'coral'  },
+  { id: 'lab',        label: 'Laboratory',                 short: 'Lab',        icon: 'ti-test-pipe',     ramp: 'pink'   },
+  { id: 'radiology',  label: 'Radiology',                  short: 'Radiology',  icon: 'ti-radioactive',   ramp: 'amber'  },
+  { id: 'infra',      label: 'Infrastructure',             short: 'Infra',      icon: 'ti-building',      ramp: 'gray'   },
+  { id: 'safety',     label: 'Patient Safety & Quality',   short: 'Safety',     icon: 'ti-shield-check',  ramp: 'green'  }
 ];
 
 const PRIORITY = {
@@ -29,13 +37,17 @@ const STATUS = {
 
 const state = {
   gaps: [],
-  users: [],            // [{name, staffId}]
-  currentUser: null,    // {name, staffId}
-  currentSim: 'OPD-002',
+  users: [],
+  currentUser: null,
+  currentArea: 'OP',
+  currentSerial: '',
   currentDate: new Date().toISOString().slice(0, 10),
   inboxFilter: 'all',
   activeTab: 'capture',
-  pendingNewUsers: []   // people typed into assigned-to that should be saved on next upsert
+  quickDomain: null,
+  quickPriority: 'ME',
+  quickStopper: false,
+  pendingPhoto: null    // { url, id, name } after upload, before save
 };
 
 function userLabel(u) {
@@ -45,23 +57,38 @@ function userLabel(u) {
 }
 
 function parseUserLabel(s) {
-  // Accept "Name (12345)" or "Name"
   const m = String(s || '').match(/^(.+?)\s*\((\d+)\)\s*$/);
   if (m) return { name: m[1].trim(), staffId: m[2].trim() };
   return { name: String(s || '').trim(), staffId: '' };
 }
 
-// ----------------------------------------------------------------
-// Access gate (shared password)
-// ----------------------------------------------------------------
+function urlParams() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      pwd: p.get('p') || '',
+      sim: p.get('sim') || '',
+      area: p.get('area') || ''
+    };
+  } catch (e) { return { pwd: '', sim: '', area: '' }; }
+}
 
+function fullSimId() {
+  const serial = String(state.currentSerial || '').trim();
+  if (!serial) return state.currentArea;
+  return `${state.currentArea}-${serial}`;
+}
+
+// ----- Access gate -----
 function checkAccessGate() {
   const required = window.APP_PASSWORD || '';
-  if (!required) return true; // No password set in config
-  try {
-    const stored = sessionStorage.getItem('almathar_access');
-    if (stored === required) return true;
-  } catch (e) {}
+  if (!required) return true;
+  const fromUrl = urlParams().pwd;
+  if (fromUrl && fromUrl === required) {
+    try { sessionStorage.setItem('almathar_access', required); } catch (e) {}
+    return true;
+  }
+  try { if (sessionStorage.getItem('almathar_access') === required) return true; } catch (e) {}
   return false;
 }
 
@@ -73,17 +100,13 @@ function submitAccessPassword() {
     document.getElementById('access-overlay').style.display = 'none';
     bootAfterAccess();
   } else {
-    const err = document.getElementById('access-error');
-    err.style.display = 'block';
+    document.getElementById('access-error').style.display = 'block';
     input.value = '';
     input.focus();
   }
 }
 
-// ----------------------------------------------------------------
-// Identity (name + staffId)
-// ----------------------------------------------------------------
-
+// ----- Identity -----
 function loadIdentity() {
   try {
     const saved = localStorage.getItem('almathar_user_v3');
@@ -102,8 +125,7 @@ function clearIdentity() {
 }
 
 function promptForIdentity() {
-  const wrap = document.getElementById('identity-overlay');
-  wrap.style.display = 'flex';
+  document.getElementById('identity-overlay').style.display = 'flex';
   document.getElementById('identity-name').value = '';
   document.getElementById('identity-staffid').value = '';
   document.getElementById('identity-error').style.display = 'none';
@@ -114,20 +136,11 @@ async function submitIdentity() {
   const name = document.getElementById('identity-name').value.trim();
   const staffId = document.getElementById('identity-staffid').value.trim();
   const err = document.getElementById('identity-error');
-  if (name.length < 2) {
-    err.textContent = 'Please enter your full name.';
-    err.style.display = 'block';
-    return;
-  }
-  if (!/^\d{3,8}$/.test(staffId)) {
-    err.textContent = 'Staff ID must be 3 to 8 digits.';
-    err.style.display = 'block';
-    return;
-  }
+  if (name.length < 2) { err.textContent = 'Please enter your full name.'; err.style.display = 'block'; return; }
+  if (!/^\d{3,8}$/.test(staffId)) { err.textContent = 'Staff ID must be 3 to 8 digits.'; err.style.display = 'block'; return; }
   saveIdentity(name, staffId);
   document.getElementById('identity-overlay').style.display = 'none';
   renderIdentityBadge();
-  // Register on server right away
   try {
     await fetch(window.API_URL, {
       method: 'POST',
@@ -135,6 +148,7 @@ async function submitIdentity() {
       body: JSON.stringify({ action: 'registerUser', userObj: state.currentUser, user: userLabel(state.currentUser) })
     });
   } catch (e) {}
+  applyUrlContext();
   refresh();
 }
 
@@ -142,10 +156,9 @@ function renderIdentityBadge() {
   const el = document.getElementById('identity-badge');
   if (!state.currentUser) { el.innerHTML = ''; return; }
   el.innerHTML = `
-    <span style="font-size:12px; color:var(--text-2);">Signed in as</span>
-    <strong style="font-size:13px;">${escapeHtml(state.currentUser.name)}</strong>
-    <span style="font-size:11px; color:var(--text-2);">(${escapeHtml(state.currentUser.staffId)})</span>
-    <button onclick="changeIdentity()" style="font-size:11px; padding:3px 8px;" title="Change identity">
+    <span class="who-name">${escapeHtml(state.currentUser.name)}</span>
+    <span class="who-id">${escapeHtml(state.currentUser.staffId)}</span>
+    <button onclick="changeIdentity()" class="who-edit" title="Change identity" aria-label="Change identity">
       <i class="ti ti-user-edit"></i>
     </button>
   `;
@@ -157,10 +170,7 @@ function changeIdentity() {
   promptForIdentity();
 }
 
-// ----------------------------------------------------------------
-// API layer
-// ----------------------------------------------------------------
-
+// ----- API -----
 function isConfigured() {
   return typeof window.API_URL === 'string' && !window.API_URL.includes('PASTE_YOUR');
 }
@@ -179,8 +189,7 @@ async function apiUpsert(gap, newUsers) {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
-      action: 'upsert',
-      gap,
+      action: 'upsert', gap,
       user: userLabel(state.currentUser) || 'web',
       userObj: state.currentUser,
       newUsers: newUsers || []
@@ -198,8 +207,7 @@ async function apiDelete(id) {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
-      action: 'delete',
-      id,
+      action: 'delete', id,
       user: userLabel(state.currentUser) || 'web',
       userObj: state.currentUser
     })
@@ -208,15 +216,78 @@ async function apiDelete(id) {
   if (!data.ok) throw new Error(data.error || 'delete failed');
 }
 
-// ----------------------------------------------------------------
-// UI helpers
-// ----------------------------------------------------------------
+async function apiUploadPhoto(file) {
+  if (!isConfigured()) throw new Error('Not configured');
+  // Read file as base64, compress if large
+  const compressed = await compressImage(file, 1280, 0.75);
+  const base64 = await fileToBase64(compressed);
+  const res = await fetch(window.API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action: 'uploadPhoto',
+      filename: file.name || ('photo_' + Date.now() + '.jpg'),
+      mimeType: compressed.type || 'image/jpeg',
+      base64,
+      user: userLabel(state.currentUser) || 'web'
+    })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'upload failed');
+  return data.photo;
+}
 
-function toast(msg) {
+// ----- Image utilities -----
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function compressImage(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round(height * (maxDim / width));
+          width = maxDim;
+        } else {
+          width = Math.round(width * (maxDim / height));
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) return reject(new Error('compression failed'));
+        blob.name = file.name;
+        resolve(blob);
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// ----- helpers -----
+function toast(msg, isError) {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  t.classList.toggle('error', !!isError);
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 1800);
+  setTimeout(() => t.classList.remove('show'), 2200);
 }
 
 function escapeHtml(s) {
@@ -229,15 +300,13 @@ function escapeHtml(s) {
 function configBanner() {
   const el = document.getElementById('config-banner');
   if (!isConfigured()) {
-    el.innerHTML = '<div class="config-banner"><i class="ti ti-alert-triangle"></i> Not connected to Google Sheets. Open <code>config.js</code> and paste your Apps Script <code>/exec</code> URL.</div>';
+    el.innerHTML = '<div class="config-banner"><i class="ti ti-alert-triangle"></i> Not connected to Google Sheets.</div>';
   } else {
     el.innerHTML = '';
   }
 }
 
-function domainOf(id) {
-  return DOMAINS.find(d => d.id === id) || DOMAINS[0];
-}
+function domainOf(id) { return DOMAINS.find(d => d.id === id) || DOMAINS[0]; }
 
 function fmtDateTime(s) {
   if (!s) return '';
@@ -265,11 +334,10 @@ async function refresh() {
     render();
   } catch (err) {
     console.error(err);
-    toast('Could not load from Sheets — check the URL');
+    toast('Could not load — check connection', true);
   }
 }
 
-// Build datalist options for the assigned-to combobox
 function userDatalistHTML(listId) {
   const seen = new Set();
   const opts = [];
@@ -283,135 +351,249 @@ function userDatalistHTML(listId) {
   return `<datalist id="${listId}">${opts.join('')}</datalist>`;
 }
 
-// Look up user object from a free-text combobox value; create-pending if new
 function resolveAssignee(rawValue) {
   const raw = String(rawValue || '').trim();
   if (!raw) return { user: null, isNew: false };
   const parsed = parseUserLabel(raw);
-  // Match existing user by staffId first, then by name
   let match = state.users.find(u => parsed.staffId && u.staffId === parsed.staffId);
   if (!match) match = state.users.find(u => u.name.toLowerCase() === parsed.name.toLowerCase());
   if (match) return { user: match, isNew: false };
-  // New user — must have an ID
   if (!/^\d{3,8}$/.test(parsed.staffId)) {
     return { user: null, isNew: true, error: `New person "${parsed.name}" needs a staff ID in parentheses, e.g. "${parsed.name} (12345)"` };
   }
   return { user: parsed, isNew: true };
 }
 
-// ----------------------------------------------------------------
-// Capture view
-// ----------------------------------------------------------------
+function applyUrlContext() {
+  const p = urlParams();
+  if (p.area && AREA_CODES.includes(p.area)) state.currentArea = p.area;
+  if (p.sim) {
+    // Accept "OP-005" or just a serial like "005"
+    const m = String(p.sim).match(/^([A-Za-z]+)-?(.+)$/);
+    if (m && AREA_CODES.includes(m[1].toUpperCase())) {
+      state.currentArea = m[1].toUpperCase();
+      state.currentSerial = m[2];
+    } else {
+      state.currentSerial = String(p.sim);
+    }
+  }
+}
 
+// ----- Capture (single mode) -----
 function renderCapture() {
   const el = document.getElementById('view-capture');
   el.innerHTML = `
-    <div class="card" style="background:var(--bg-2); border:none; margin-bottom:1rem;">
-      <div class="grid-3" style="margin-bottom:10px;">
-        <div><label>Simulation ID</label><input id="f-sim" value="${escapeHtml(state.currentSim)}"></div>
-        <div><label>Date</label><input id="f-date" type="date" value="${state.currentDate}"></div>
-        <div><label>Workstream (domain)</label><select id="f-domain">${
-          DOMAINS.map(d => `<option value="${d.id}">${d.label}</option>`).join('')
-        }</select></div>
-      </div>
-      <label>Gap / observation (narrative)</label>
-      <textarea id="f-text" rows="2" placeholder="Describe the gap, near-miss, or observation..."></textarea>
-      <div style="display:grid; grid-template-columns:1fr 1.5fr 1fr auto; gap:10px; margin-top:10px; align-items:end;">
-        <div><label>Priority</label><select id="f-priority">${
-          Object.entries(PRIORITY).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')
-        }</select></div>
+    <div class="quick-form">
+      <div class="sim-row">
         <div>
-          <label>Assigned to (person)</label>
-          <input id="f-assigned" list="users-list-capture" placeholder="Type name, e.g. Dr. Khan (12345)" autocomplete="off">
-          ${userDatalistHTML('users-list-capture')}
+          <label>Area</label>
+          <select id="q-area">
+            ${AREA_CODES.map(a => `<option value="${a}" ${a === state.currentArea ? 'selected' : ''}>${a}</option>`).join('')}
+          </select>
         </div>
-        <div><label>Target date</label><input id="f-due" type="date"></div>
-        <button class="primary" onclick="addGap()"><i class="ti ti-plus"></i> Log gap</button>
+        <div>
+          <label>Serial</label>
+          <input id="q-serial" value="${escapeHtml(state.currentSerial)}" placeholder="001" inputmode="numeric">
+        </div>
+        <div class="sim-preview">
+          <label>Sim ID</label>
+          <div class="sim-tag" id="sim-preview">${escapeHtml(fullSimId())}</div>
+        </div>
       </div>
-      <div style="font-size:11px; color:var(--text-2); margin-top:8px;">
-        <i class="ti ti-info-circle"></i> Logger: <strong>${escapeHtml(userLabel(state.currentUser) || '(not set)')}</strong>
-        · For a new person, type their name then their staff ID in parentheses: <code>Name (12345)</code>
+
+      <div class="quick-label">1. Workstream</div>
+      <div class="chip-row">
+        ${DOMAINS.map(d => `
+          <button class="chip chip-${d.ramp} ${state.quickDomain === d.id ? 'selected' : ''}" onclick="pickDomain('${d.id}')">
+            <i class="ti ${d.icon}"></i><span>${d.short}</span>
+          </button>
+        `).join('')}
+      </div>
+
+      <div class="quick-label">2. Priority</div>
+      <div class="chip-row priority-row">
+        ${Object.entries(PRIORITY).map(([k, v]) => `
+          <button class="chip chip-${v.color} ${state.quickPriority === k ? 'selected' : ''}" onclick="pickPriority('${k}')">${v.label}</button>
+        `).join('')}
+      </div>
+
+      <div class="quick-label">3. What happened?</div>
+      <textarea id="q-text" rows="2" placeholder="One sentence. Be specific. (e.g. POS terminal not available at front desk)"></textarea>
+
+      <div class="stopper-row">
+        <label class="stopper-toggle">
+          <input type="checkbox" id="q-stopper" ${state.quickStopper ? 'checked' : ''} onchange="state.quickStopper=this.checked">
+          <span class="stopper-pill">
+            <i class="ti ti-flag-3"></i> Day-1 stopper
+          </span>
+        </label>
+        <span class="stopper-hint">Tick if this blocks Day 0 launch if not resolved</span>
+      </div>
+
+      <div class="photo-row">
+        <label>Photo (optional)</label>
+        <div id="photo-area">
+          ${renderPhotoArea()}
+        </div>
+      </div>
+
+      <div class="quick-meta">
+        <button class="primary big" onclick="addQuickGap()"><i class="ti ti-plus"></i> Log gap</button>
       </div>
     </div>
 
-    <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-      <div style="font-size:14px; font-weight:500;">Captured gaps (${state.gaps.length})</div>
-      <button onclick="refresh()" style="font-size:12px;"><i class="ti ti-refresh"></i> Reload</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin: 1.25rem 0 8px;">
+      <div style="font-size:14px; font-weight:500;">Recent gaps (${state.gaps.length})</div>
+      <button onclick="refresh()" class="ghost-btn"><i class="ti ti-refresh"></i> Reload</button>
     </div>
     <div id="capture-list"></div>
   `;
 
+  document.getElementById('q-area').addEventListener('change', (e) => {
+    state.currentArea = e.target.value;
+    document.getElementById('sim-preview').textContent = fullSimId();
+  });
+  document.getElementById('q-serial').addEventListener('input', (e) => {
+    state.currentSerial = e.target.value;
+    document.getElementById('sim-preview').textContent = fullSimId();
+  });
+
+  renderCaptureList();
+}
+
+function renderPhotoArea() {
+  if (state.pendingPhoto) {
+    return `
+      <div class="photo-preview">
+        <img src="${escapeHtml(state.pendingPhoto.url)}" alt="Preview" referrerpolicy="no-referrer">
+        <button class="ghost-btn" onclick="clearPendingPhoto()"><i class="ti ti-x"></i> Remove</button>
+      </div>
+    `;
+  }
+  return `
+    <label class="photo-btn">
+      <input type="file" accept="image/*" capture="environment" onchange="onPhotoSelected(event)" style="display:none;">
+      <i class="ti ti-camera"></i> Take or choose photo
+    </label>
+  `;
+}
+
+async function onPhotoSelected(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  toast('Uploading photo…');
+  try {
+    const photo = await apiUploadPhoto(file);
+    state.pendingPhoto = photo;
+    document.getElementById('photo-area').innerHTML = renderPhotoArea();
+    toast('Photo attached');
+  } catch (err) {
+    console.error(err);
+    toast('Photo upload failed', true);
+  }
+}
+
+function clearPendingPhoto() {
+  state.pendingPhoto = null;
+  document.getElementById('photo-area').innerHTML = renderPhotoArea();
+}
+
+function pickDomain(id) {
+  state.quickDomain = id;
+  // Re-render only the chip rows to avoid wiping the textarea
+  const chipRows = document.querySelectorAll('.chip-row');
+  if (chipRows.length) chipRows[0].innerHTML = DOMAINS.map(d => `
+    <button class="chip chip-${d.ramp} ${state.quickDomain === d.id ? 'selected' : ''}" onclick="pickDomain('${d.id}')">
+      <i class="ti ${d.icon}"></i><span>${d.short}</span>
+    </button>
+  `).join('');
+}
+
+function pickPriority(p) {
+  state.quickPriority = p;
+  const chipRows = document.querySelectorAll('.chip-row');
+  if (chipRows.length >= 2) chipRows[1].innerHTML = Object.entries(PRIORITY).map(([k, v]) => `
+    <button class="chip chip-${v.color} ${state.quickPriority === k ? 'selected' : ''}" onclick="pickPriority('${k}')">${v.label}</button>
+  `).join('');
+}
+
+async function addQuickGap() {
+  if (!state.currentUser) { promptForIdentity(); return; }
+  const text = document.getElementById('q-text').value.trim();
+  if (!state.quickDomain) { toast('Pick a workstream', true); return; }
+  if (!text) { toast('Add a description', true); return; }
+  const serial = document.getElementById('q-serial').value.trim();
+  state.currentSerial = serial;
+  const sim = fullSimId();
+  state.quickStopper = document.getElementById('q-stopper').checked;
+
+  const gap = {
+    id: 'g_' + Date.now(),
+    sim,
+    date: state.currentDate,
+    domain: state.quickDomain,
+    text,
+    priority: state.quickPriority,
+    owner: domainOf(state.quickDomain).label,
+    assignedTo: '',
+    actionPlan: '',
+    status: 'P',
+    due: '',
+    isStopper: state.quickStopper ? 'YES' : '',
+    photoUrl: state.pendingPhoto ? state.pendingPhoto.url : '',
+    photoId: state.pendingPhoto ? state.pendingPhoto.id : '',
+    loggedBy: userLabel(state.currentUser)
+  };
+
+  try {
+    const saved = await apiUpsert(gap, []);
+    state.gaps.push(saved);
+    toast(state.quickStopper ? 'Logged · flagged as Day-1 stopper' : 'Logged');
+    document.getElementById('q-text').value = '';
+    document.getElementById('q-stopper').checked = false;
+    state.quickStopper = false;
+    state.pendingPhoto = null;
+    document.getElementById('photo-area').innerHTML = renderPhotoArea();
+    renderCaptureList();
+  } catch (err) {
+    console.error(err);
+    toast('Save failed', true);
+  }
+}
+
+function renderCaptureList() {
   const list = document.getElementById('capture-list');
-  const sorted = [...state.gaps].sort((a, b) => (b.id > a.id ? 1 : -1));
+  if (!list) return;
+  const sorted = [...state.gaps].sort((a, b) => (b.id > a.id ? 1 : -1)).slice(0, 15);
   if (sorted.length === 0) {
-    list.innerHTML = '<div class="empty">No gaps yet. Use the form above to log the first one.</div>';
+    list.innerHTML = '<div class="empty">No gaps yet.</div>';
     return;
   }
   list.innerHTML = sorted.map(g => {
     const d = domainOf(g.domain);
     const p = PRIORITY[g.priority] || PRIORITY.ME;
     return `
-      <div class="gap-item" style="padding:10px 12px;">
-        <div style="display:flex; gap:10px; align-items:center;">
-          <span class="pill c-${d.ramp}"><i class="ti ${d.icon}"></i>${d.label}</span>
+      <div class="gap-item compact">
+        <div class="gap-row">
+          <span class="pill c-${d.ramp}"><i class="ti ${d.icon}"></i>${d.short}</span>
           <span class="pill c-${p.color}">${p.label}</span>
-          <span style="flex:1; font-size:13px;">${escapeHtml(g.text)}</span>
-          <span style="font-size:12px; color:var(--text-2);">${escapeHtml(g.sim)}</span>
-          <button onclick="deleteGap('${g.id}')" aria-label="Delete"><i class="ti ti-trash"></i></button>
+          ${g.isStopper === 'YES' ? '<span class="pill c-red"><i class="ti ti-flag-3"></i> Stopper</span>' : ''}
+          ${g.photoUrl ? `<a href="${escapeHtml(g.photoUrl)}" target="_blank" class="pill c-gray" title="View photo"><i class="ti ti-photo"></i></a>` : ''}
+          <span class="gap-text">${escapeHtml(g.text)}</span>
+          <button onclick="deleteGap('${g.id}')" aria-label="Delete" class="ghost-btn"><i class="ti ti-trash"></i></button>
         </div>
-        <div style="font-size:11px; color:var(--text-2); margin-top:6px;">
-          Logged by <strong>${escapeHtml(g.loggedBy || '—')}</strong>
-          ${g.assignedTo ? ` · Assigned to <strong>${escapeHtml(g.assignedTo)}</strong>` : ''}
-          ${g.lastEditedBy && g.lastEditedBy !== g.loggedBy ? ` · Last edited by <strong>${escapeHtml(g.lastEditedBy)}</strong> at ${escapeHtml(fmtDateTime(g.updatedAt))}` : ''}
+        <div class="gap-byline">
+          ${escapeHtml(g.sim)} · By ${escapeHtml(g.loggedBy || '—')}
+          ${g.assignedTo ? ` · To ${escapeHtml(g.assignedTo)}` : ' · Awaiting assignment'}
+          ${g.due ? ` · Due ${g.due}` : ''}
         </div>
       </div>
     `;
   }).join('');
 }
 
-async function addGap() {
-  if (!state.currentUser) { promptForIdentity(); return; }
-  const text = document.getElementById('f-text').value.trim();
-  if (!text) { alert('Please describe the gap.'); return; }
-
-  const assignedRaw = document.getElementById('f-assigned').value;
-  const resolution = resolveAssignee(assignedRaw);
-  if (assignedRaw && resolution.error) {
-    alert(resolution.error);
-    return;
-  }
-  const newUsers = (resolution.isNew && resolution.user) ? [resolution.user] : [];
-
-  const gap = {
-    id: 'g_' + Date.now(),
-    sim: document.getElementById('f-sim').value,
-    date: document.getElementById('f-date').value,
-    domain: document.getElementById('f-domain').value,
-    text,
-    priority: document.getElementById('f-priority').value,
-    owner: domainOf(document.getElementById('f-domain').value).label,
-    assignedTo: resolution.user ? userLabel(resolution.user) : '',
-    actionPlan: '',
-    status: 'P',
-    due: document.getElementById('f-due').value || '',
-    loggedBy: userLabel(state.currentUser)
-  };
-
-  try {
-    const saved = await apiUpsert(gap, newUsers);
-    state.gaps.push(saved);
-    toast(newUsers.length ? `Gap logged · ${newUsers[0].name} added to people list` : 'Gap logged');
-    document.getElementById('f-text').value = '';
-    document.getElementById('f-assigned').value = '';
-    render();
-  } catch (err) {
-    console.error(err);
-    toast('Save failed — check connection');
-  }
-}
-
 async function deleteGap(id) {
-  if (!confirm('Remove this gap?')) return;
+  if (!confirm('Remove this gap? Any attached photo will also be deleted.')) return;
   try {
     await apiDelete(id);
     state.gaps = state.gaps.filter(g => g.id !== id);
@@ -419,31 +601,36 @@ async function deleteGap(id) {
     render();
   } catch (err) {
     console.error(err);
-    toast('Delete failed');
+    toast('Delete failed', true);
   }
 }
 
-// ----------------------------------------------------------------
-// Team Inbox view
-// ----------------------------------------------------------------
-
+// ----- Inbox -----
 function renderInbox() {
   const el = document.getElementById('view-inbox');
   const filter = state.inboxFilter;
   const counts = {};
   DOMAINS.forEach(d => counts[d.id] = state.gaps.filter(g => g.domain === d.id).length);
   const myLabel = userLabel(state.currentUser);
-  const minCount = state.gaps.filter(g => g.assignedTo && g.assignedTo === myLabel).length;
+  const mineCount = state.gaps.filter(g => g.assignedTo && g.assignedTo === myLabel).length;
+  const unassigned = state.gaps.filter(g => !g.assignedTo).length;
+  const stoppers = state.gaps.filter(g => g.isStopper === 'YES' && g.status !== 'C' && g.status !== 'V').length;
 
   el.innerHTML = `
     <div class="filter-row">
       <button class="${filter === 'all' ? 'active' : ''}" onclick="setInboxFilter('all')">All (${state.gaps.length})</button>
+      <button class="${filter === 'stoppers' ? 'active' : ''}" onclick="setInboxFilter('stoppers')">
+        <i class="ti ti-flag-3"></i> Day-1 stoppers (${stoppers})
+      </button>
+      <button class="${filter === 'unassigned' ? 'active' : ''}" onclick="setInboxFilter('unassigned')">
+        <i class="ti ti-alert-circle"></i> Unassigned (${unassigned})
+      </button>
       <button class="${filter === 'mine' ? 'active' : ''}" onclick="setInboxFilter('mine')">
-        <i class="ti ti-user"></i> Assigned to me (${minCount})
+        <i class="ti ti-user"></i> Mine (${mineCount})
       </button>
       ${DOMAINS.map(d => `
         <button class="${filter === d.id ? 'active' : ''}" onclick="setInboxFilter('${d.id}')">
-          <i class="ti ${d.icon}"></i> ${d.label} (${counts[d.id]})
+          <i class="ti ${d.icon}"></i> ${d.short} (${counts[d.id]})
         </button>
       `).join('')}
     </div>
@@ -455,6 +642,8 @@ function renderInbox() {
   let items;
   if (filter === 'all') items = state.gaps;
   else if (filter === 'mine') items = state.gaps.filter(g => g.assignedTo && g.assignedTo === myLabel);
+  else if (filter === 'unassigned') items = state.gaps.filter(g => !g.assignedTo);
+  else if (filter === 'stoppers') items = state.gaps.filter(g => g.isStopper === 'YES' && g.status !== 'C' && g.status !== 'V');
   else items = state.gaps.filter(g => g.domain === filter);
 
   if (items.length === 0) {
@@ -465,17 +654,25 @@ function renderInbox() {
     const d = domainOf(g.domain);
     const p = PRIORITY[g.priority] || PRIORITY.ME;
     return `
-      <div class="gap-item">
+      <div class="gap-item ${g.isStopper === 'YES' ? 'is-stopper' : ''}">
         <div class="gap-meta">
           <span class="pill c-${d.ramp}"><i class="ti ${d.icon}"></i>${d.label}</span>
           <span class="pill c-${p.color}">${p.label}</span>
+          ${g.isStopper === 'YES' ? '<span class="pill c-red"><i class="ti ti-flag-3"></i> Day-1 stopper</span>' : ''}
+          ${!g.assignedTo ? '<span class="pill c-amber"><i class="ti ti-alert-circle"></i> Unassigned</span>' : ''}
           <span style="color:var(--text-2); margin-left:auto;">${escapeHtml(g.sim)} · ${g.date}</span>
         </div>
         <div style="font-size:14px; margin-bottom:10px;">${escapeHtml(g.text)}</div>
-
-        <div style="display:grid; grid-template-columns:1.5fr 1fr 1fr; gap:10px; margin-bottom:10px;">
+        ${g.photoUrl ? `
+          <div class="inbox-photo">
+            <a href="${escapeHtml(g.photoUrl)}" target="_blank">
+              <img src="${escapeHtml(g.photoUrl)}" alt="Photo" referrerpolicy="no-referrer">
+            </a>
+          </div>
+        ` : ''}
+        <div class="inbox-fields">
           <div>
-            <label>Assigned to</label>
+            <label>Assigned to (person)</label>
             <input id="as-${g.id}" list="users-list-inbox" value="${escapeHtml(g.assignedTo || '')}" placeholder="Type name (staffId)" autocomplete="off">
           </div>
           <div>
@@ -489,11 +686,17 @@ function renderInbox() {
             </select>
           </div>
         </div>
-
+        <div class="stopper-row" style="margin: 4px 0 10px;">
+          <label class="stopper-toggle">
+            <input type="checkbox" id="sp-${g.id}" ${g.isStopper === 'YES' ? 'checked' : ''}>
+            <span class="stopper-pill">
+              <i class="ti ti-flag-3"></i> Day-1 stopper
+            </span>
+          </label>
+        </div>
         <label>Action plan / response</label>
         <textarea id="ap-${g.id}" rows="2" placeholder="What will you do, by when, who is responsible...">${escapeHtml(g.actionPlan || '')}</textarea>
-
-        <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
+        <div style="display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap;">
           <div style="font-size:11px; color:var(--text-2);">
             Logged by <strong>${escapeHtml(g.loggedBy || '—')}</strong>
             ${g.lastEditedBy ? ` · Last edited by <strong>${escapeHtml(g.lastEditedBy)}</strong> on ${escapeHtml(fmtDateTime(g.updatedAt))}` : ''}
@@ -513,20 +716,16 @@ async function saveResponse(id) {
   if (!state.currentUser) { promptForIdentity(); return; }
   const g = state.gaps.find(x => x.id === id);
   if (!g) return;
-
   const assignedRaw = document.getElementById('as-' + id).value;
   const resolution = resolveAssignee(assignedRaw);
-  if (assignedRaw && resolution.error) {
-    alert(resolution.error);
-    return;
-  }
+  if (assignedRaw && resolution.error) { alert(resolution.error); return; }
   const newUsers = (resolution.isNew && resolution.user) ? [resolution.user] : [];
 
   g.actionPlan = document.getElementById('ap-' + id).value;
   g.status = document.getElementById('st-' + id).value;
   g.assignedTo = resolution.user ? userLabel(resolution.user) : '';
   g.due = document.getElementById('du-' + id).value;
-
+  g.isStopper = document.getElementById('sp-' + id).checked ? 'YES' : '';
   try {
     const saved = await apiUpsert(g, newUsers);
     Object.assign(g, saved);
@@ -534,20 +733,19 @@ async function saveResponse(id) {
     render();
   } catch (err) {
     console.error(err);
-    toast('Save failed');
+    toast('Save failed', true);
   }
 }
 
-// ----------------------------------------------------------------
-// Dashboard view
-// ----------------------------------------------------------------
-
+// ----- Dashboard -----
 function renderDashboard() {
   const el = document.getElementById('view-dashboard');
   const total = state.gaps.length;
   const open = state.gaps.filter(g => g.status === 'P' || g.status === 'IP').length;
   const completed = state.gaps.filter(g => g.status === 'C' || g.status === 'V').length;
   const critical = state.gaps.filter(g => g.priority === 'CR').length;
+  const unassigned = state.gaps.filter(g => !g.assignedTo).length;
+  const stoppers = state.gaps.filter(g => g.isStopper === 'YES' && g.status !== 'C' && g.status !== 'V').length;
   const pctClosed = total ? Math.round(completed / total * 100) : 0;
 
   const byDomain = DOMAINS.map(d => {
@@ -556,7 +754,7 @@ function renderDashboard() {
       ...d,
       total: items.length,
       open: items.filter(g => g.status === 'P' || g.status === 'IP').length,
-      crit: items.filter(g => g.priority === 'CR').length,
+      stoppers: items.filter(g => g.isStopper === 'YES' && g.status !== 'C' && g.status !== 'V').length,
       done: items.filter(g => g.status === 'C' || g.status === 'V').length
     };
   }).filter(d => d.total > 0);
@@ -566,22 +764,37 @@ function renderDashboard() {
     .filter(g => g.status === 'P' || g.status === 'IP')
     .map(g => {
       let rag = 'green';
-      if (g.due) {
+      if (!g.due) rag = 'amber';
+      else {
         const due = new Date(g.due);
         const days = Math.round((due - today) / (1000 * 60 * 60 * 24));
         if (days < 0) rag = 'red';
         else if (days <= 3) rag = 'amber';
       }
+      if (g.isStopper === 'YES') rag = 'red';
       if (g.priority === 'CR' && g.status === 'P') rag = 'red';
       return { ...g, rag };
     })
-    .sort((a, b) => ({ red: 0, amber: 1, green: 2 })[a.rag] - ({ red: 0, amber: 1, green: 2 })[b.rag]);
+    .sort((a, b) => {
+      // Stoppers always first within each rag
+      if ((a.isStopper === 'YES') !== (b.isStopper === 'YES')) return a.isStopper === 'YES' ? -1 : 1;
+      return ({ red: 0, amber: 1, green: 2 })[a.rag] - ({ red: 0, amber: 1, green: 2 })[b.rag];
+    });
 
   el.innerHTML = `
-    <div class="grid-4" style="margin-bottom:1rem;">
-      <div class="stat"><div class="lbl">Total gaps</div><div class="num">${total}</div></div>
+    ${stoppers > 0 ? `
+      <div class="stopper-banner">
+        <i class="ti ti-flag-3"></i>
+        <strong>${stoppers}</strong> Day-1 stopper${stoppers === 1 ? '' : 's'} open — Day 0 launch at risk if not resolved.
+      </div>
+    ` : ''}
+
+    <div class="grid-stats">
+      <div class="stat"><div class="lbl">Total</div><div class="num">${total}</div></div>
+      <div class="stat stat-stopper"><div class="lbl">Day-1 stoppers</div><div class="num">${stoppers}</div></div>
       <div class="stat"><div class="lbl">Open</div><div class="num" style="color:var(--warn);">${open}</div></div>
       <div class="stat"><div class="lbl">Critical</div><div class="num" style="color:var(--danger);">${critical}</div></div>
+      <div class="stat"><div class="lbl">Unassigned</div><div class="num" style="color:var(--warn);">${unassigned}</div></div>
       <div class="stat"><div class="lbl">% closed</div><div class="num" style="color:var(--success);">${pctClosed}%</div></div>
     </div>
 
@@ -591,50 +804,48 @@ function renderDashboard() {
         const openPct = d.total ? (d.open / d.total * 100) : 0;
         const donePct = d.total ? (d.done / d.total * 100) : 0;
         return `
-          <div style="display:grid; grid-template-columns:200px 1fr 80px; gap:10px; align-items:center; padding:6px 0;">
-            <div style="display:flex; align-items:center; gap:6px; font-size:13px;"><i class="ti ${d.icon}"></i>${d.label}</div>
+          <div class="bar-row">
+            <div class="bar-label"><i class="ti ${d.icon}"></i>${d.label}</div>
             <div class="bar">
-              <div class="bar-done" style="width:${donePct}%;" title="Done: ${d.done}"></div>
-              <div class="bar-open" style="width:${openPct}%;" title="Open: ${d.open}"></div>
+              <div class="bar-done" style="width:${donePct}%;"></div>
+              <div class="bar-open" style="width:${openPct}%;"></div>
             </div>
-            <div style="font-size:12px; color:var(--text-2); text-align:right;">
-              ${d.done}/${d.total}${d.crit ? ` · <span style="color:var(--danger);">${d.crit} CR</span>` : ''}
-            </div>
+            <div class="bar-count">${d.done}/${d.total}${d.stoppers ? ` · <span style="color:var(--danger);"><i class="ti ti-flag-3"></i> ${d.stoppers}</span>` : ''}</div>
           </div>
         `;
       }).join('')}
     </div>
 
-    <div style="font-size:14px; font-weight:500; margin-bottom:8px;">Open action items (RAG-sorted)</div>
-    <div class="card" style="padding:0; overflow:hidden;">
+    <div style="font-size:14px; font-weight:500; margin-bottom:8px;">Open action items (stoppers first, then RAG)</div>
+    <div class="card" style="padding:0; overflow-x:auto;">
       <table>
         <thead>
           <tr>
             <th style="width:14px;"></th>
+            <th>Flag</th>
             <th>Workstream</th>
             <th>Gap</th>
-            <th>Assigned to</th>
+            <th>Assigned</th>
             <th>Due</th>
             <th>Status</th>
-            <th>Last edited</th>
           </tr>
         </thead>
         <tbody>
-          ${openItems.slice(0, 20).map(g => {
+          ${openItems.slice(0, 25).map(g => {
             const d = domainOf(g.domain);
             return `
               <tr>
                 <td class="rag-${g.rag}"></td>
-                <td><i class="ti ${d.icon}"></i> ${d.label.split(' ')[0]}</td>
-                <td>${escapeHtml(g.text)}</td>
+                <td>${g.isStopper === 'YES' ? '<i class="ti ti-flag-3" style="color:var(--danger);" title="Day-1 stopper"></i>' : ''}</td>
+                <td><i class="ti ${d.icon}"></i> ${d.short}</td>
+                <td>${escapeHtml(g.text)} ${g.photoUrl ? '<i class="ti ti-photo" style="color:var(--text-2); margin-left:4px;"></i>' : ''}</td>
                 <td>${escapeHtml(g.assignedTo || '—')}</td>
                 <td>${g.due || '—'}</td>
                 <td>${STATUS[g.status]}</td>
-                <td style="font-size:11px;">${escapeHtml(g.lastEditedBy || '—')}</td>
               </tr>
             `;
           }).join('')}
-          ${openItems.length === 0 ? '<tr><td colspan="7" class="empty">No open items — all clear.</td></tr>' : ''}
+          ${openItems.length === 0 ? '<tr><td colspan="7" class="empty">All clear.</td></tr>' : ''}
         </tbody>
       </table>
     </div>
@@ -648,22 +859,17 @@ function renderDashboard() {
 }
 
 function exportCSV() {
-  const cols = ['id', 'sim', 'date', 'domain', 'text', 'priority', 'owner', 'assignedTo', 'actionPlan', 'status', 'due', 'loggedBy', 'lastEditedBy', 'createdAt', 'updatedAt'];
+  const cols = ['id', 'sim', 'date', 'domain', 'text', 'priority', 'isStopper', 'owner', 'assignedTo', 'actionPlan', 'status', 'due', 'photoUrl', 'loggedBy', 'lastEditedBy', 'createdAt', 'updatedAt'];
   const rows = [cols.join(',')].concat(
     state.gaps.map(g => cols.map(c => `"${String(g[c] || '').replace(/"/g, '""')}"`).join(','))
   );
   const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = 'almathar-gaps.csv';
-  a.click();
+  a.href = url; a.download = 'almathar-gaps.csv'; a.click();
 }
 
-// ----------------------------------------------------------------
-// Init
-// ----------------------------------------------------------------
-
+// ----- Init -----
 function render() {
   if (state.activeTab === 'capture') renderCapture();
   if (state.activeTab === 'inbox') renderInbox();
@@ -674,12 +880,10 @@ function bootAfterAccess() {
   configBanner();
   loadIdentity();
   renderIdentityBadge();
+  applyUrlContext();
   setTab('capture');
-  if (!state.currentUser) {
-    promptForIdentity();
-  } else {
-    refresh();
-  }
+  if (!state.currentUser) promptForIdentity();
+  else refresh();
 }
 
 function init() {
@@ -692,7 +896,6 @@ function init() {
   } else {
     bootAfterAccess();
   }
-  // Wire identity submit on Enter
   document.getElementById('identity-staffid').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitIdentity();
   });
