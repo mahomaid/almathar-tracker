@@ -1,7 +1,10 @@
-// Almathar Simulation Readiness Tracker — frontend v7
-// New: source field (sim/snag), top-level capture toggle, snag list mode,
-//      19 workstreams (added Signage, Parking, Security, General, Clin Eng)
-//      Source filter on inbox and dashboard
+// Almathar Simulation Readiness Tracker — frontend v8
+// New in v8:
+//   - "Assigned to" renamed to "Owner" across the app
+//   - Owner becomes a dropdown sourced from the People tab in the Sheet
+//   - Dropdown is filtered to people in the same workstream by default
+//   - "Email Owner" button on each gap (mailto: link, opens email client)
+//   - Legacy free-text assignedTo values are preserved and displayed
 
 const AREA_CODES = ['ED', 'IP', 'OP', 'ICU', 'OR', 'Radiology', 'Lab', 'Pharmacy', 'Maternity', 'Admin'];
 
@@ -41,13 +44,14 @@ const state = {
   users: [],
   leaders: [],
   roleFlags: [],
+  people: [],
   currentUser: null,
   currentArea: 'OP',
   currentSerial: '',
   currentDate: new Date().toISOString().slice(0, 10),
   inboxFilter: 'all',
-  sourceFilter: 'all',          // all | sim | snag
-  captureSource: 'snag',        // sim | snag — which capture form is showing
+  sourceFilter: 'all',
+  captureSource: 'snag',
   activeTab: 'capture',
   quickDomain: null,
   quickPriority: 'ME',
@@ -81,6 +85,21 @@ function fullSimId() {
 }
 
 function leaderFor(domainId) { return state.leaders.find(l => l.domain === domainId) || null; }
+
+// Look up a person from the People tab by their display label.
+// Format used: "Name (staffId)" — same as userLabel.
+function personByLabel(label) {
+  if (!label) return null;
+  const parsed = parseUserLabel(label);
+  if (parsed.staffId) {
+    return state.people.find(p => p.staffId === parsed.staffId) || null;
+  }
+  return state.people.find(p => p.name.toLowerCase() === parsed.name.toLowerCase()) || null;
+}
+
+function peopleForWorkstream(domainId) {
+  return state.people.filter(p => p.workstream === domainId);
+}
 
 // ----- Access gate -----
 function checkAccessGate() {
@@ -176,11 +195,14 @@ function changeIdentity() {
 function isConfigured() { return typeof window.API_URL === 'string' && !window.API_URL.includes('PASTE_YOUR'); }
 
 async function apiList() {
-  if (!isConfigured()) return { gaps: [], users: [], leaders: [], roleFlags: [] };
+  if (!isConfigured()) return { gaps: [], users: [], leaders: [], roleFlags: [], people: [] };
   const res = await fetch(window.API_URL + '?action=list');
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || 'list failed');
-  return { gaps: data.gaps || [], users: data.users || [], leaders: data.leaders || [], roleFlags: data.roleFlags || [] };
+  return {
+    gaps: data.gaps || [], users: data.users || [], leaders: data.leaders || [],
+    roleFlags: data.roleFlags || [], people: data.people || []
+  };
 }
 
 async function apiUpsert(gap, newUsers) {
@@ -333,37 +355,12 @@ async function refresh() {
     state.users = data.users;
     state.leaders = data.leaders;
     state.roleFlags = data.roleFlags || [];
+    state.people = data.people || [];
     render();
   } catch (err) {
     console.error(err);
     toast('Could not load — check connection', true);
   }
-}
-
-function userDatalistHTML(listId) {
-  const seen = new Set();
-  const opts = [];
-  state.users.forEach(u => {
-    const label = userLabel(u);
-    if (!seen.has(label.toLowerCase())) {
-      seen.add(label.toLowerCase());
-      opts.push(`<option value="${escapeHtml(label)}">`);
-    }
-  });
-  return `<datalist id="${listId}">${opts.join('')}</datalist>`;
-}
-
-function resolveAssignee(rawValue) {
-  const raw = String(rawValue || '').trim();
-  if (!raw) return { user: null, isNew: false };
-  const parsed = parseUserLabel(raw);
-  let match = state.users.find(u => parsed.staffId && u.staffId === parsed.staffId);
-  if (!match) match = state.users.find(u => u.name.toLowerCase() === parsed.name.toLowerCase());
-  if (match) return { user: match, isNew: false };
-  if (!/^\d{3,8}$/.test(parsed.staffId)) {
-    return { user: null, isNew: true, error: `New person "${parsed.name}" needs a staff ID in parentheses, e.g. "${parsed.name} (12345)"` };
-  }
-  return { user: parsed, isNew: true };
 }
 
 function applyUrlContext() {
@@ -379,7 +376,7 @@ function applyUrlContext() {
   if (p.source === 'sim' || p.source === 'snag') state.captureSource = p.source;
 }
 
-// ----- Capture (with top-level source toggle) -----
+// ----- Capture (unchanged from v7 — owner not set at logging time) -----
 function renderCapture() {
   const el = document.getElementById('view-capture');
   el.innerHTML = `
@@ -462,30 +459,23 @@ function renderCapture() {
 
   if (state.captureSource === 'sim') {
     const areaEl = document.getElementById('q-area');
-    if (areaEl) {
-      areaEl.addEventListener('change', (e) => {
-        state.currentArea = e.target.value;
-        const p = document.getElementById('sim-preview');
-        if (p) p.textContent = fullSimId();
-      });
-    }
+    if (areaEl) areaEl.addEventListener('change', (e) => {
+      state.currentArea = e.target.value;
+      const p = document.getElementById('sim-preview');
+      if (p) p.textContent = fullSimId();
+    });
     const serialEl = document.getElementById('q-serial');
-    if (serialEl) {
-      serialEl.addEventListener('input', (e) => {
-        state.currentSerial = e.target.value;
-        const p = document.getElementById('sim-preview');
-        if (p) p.textContent = fullSimId();
-      });
-    }
+    if (serialEl) serialEl.addEventListener('input', (e) => {
+      state.currentSerial = e.target.value;
+      const p = document.getElementById('sim-preview');
+      if (p) p.textContent = fullSimId();
+    });
   }
 
   renderCaptureList();
 }
 
-function setCaptureSource(src) {
-  state.captureSource = src;
-  render();
-}
+function setCaptureSource(src) { state.captureSource = src; render(); }
 
 function renderPhotoArea() {
   if (state.pendingPhoto) {
@@ -613,7 +603,7 @@ function renderCaptureList() {
         </div>
         <div class="gap-byline">
           ${g.sim ? escapeHtml(g.sim) + ' · ' : ''}By ${escapeHtml(g.loggedBy || '—')}
-          ${g.assignedTo ? ` · To ${escapeHtml(g.assignedTo)}` : ' · Awaiting assignment'}
+          ${g.assignedTo ? ` · Owner: ${escapeHtml(g.assignedTo)}` : ' · No owner yet'}
           ${g.due ? ` · Due ${g.due}` : ''}
         </div>
       </div>
@@ -634,11 +624,124 @@ async function deleteGap(id) {
   }
 }
 
+// ----- Email composition (mailto:) -----
+function buildMailto(gap) {
+  const person = personByLabel(gap.assignedTo);
+  if (!person || !person.email) return null;
+
+  const d = domainOf(gap.domain);
+  const p = PRIORITY[gap.priority] || PRIORITY.ME;
+  const leader = leaderFor(gap.domain);
+  const leaderPerson = leader ? personByLabel(userLabel(leader)) : null;
+
+  const to = encodeURIComponent(person.email);
+  const cc = (leaderPerson && leaderPerson.email && leaderPerson.email !== person.email)
+    ? encodeURIComponent(leaderPerson.email) : '';
+
+  // Subject: tag + ref + workstream + brief text
+  const ref = gap.sim || (gap.source === 'snag' ? 'SNAG' : 'SIM');
+  const shortText = gap.text.slice(0, 60) + (gap.text.length > 60 ? '…' : '');
+  const subject = encodeURIComponent(`[Almathar Tracker] ${ref} — ${d.label}: ${shortText}`);
+
+  // Body
+  const lines = [
+    `Hi ${person.name.split(' ')[0] || person.name},`,
+    '',
+    `Following up on a ${gap.source === 'snag' ? 'snag list item' : 'simulation gap'} that you are the owner of:`,
+    '',
+    `Reference: ${gap.sim || '—'} (${gap.source === 'snag' ? 'Snag list' : 'Simulation'})`,
+    `Workstream: ${d.label}`,
+    `Priority: ${p.label}${gap.isStopper === 'YES' ? ' (DAY-1 STOPPER)' : ''}`,
+    `Status: ${STATUS[gap.status] || gap.status}`,
+    `Target date: ${gap.due || 'not set'}`,
+    '',
+    'Description:',
+    gap.text,
+    '',
+    gap.actionPlan ? `Current action plan:\n${gap.actionPlan}` : 'No action plan logged yet.',
+    '',
+    `Workstream lead: ${leader ? leader.name + (leader.staffId ? ' (' + leader.staffId + ')' : '') : 'not assigned'}`,
+    `Logged by: ${gap.loggedBy || '—'}`,
+    '',
+    `Could you confirm progress and update the tracker?`,
+    '',
+    `Tracker: ${window.location.origin + window.location.pathname}`,
+    '',
+    `— ${state.currentUser ? state.currentUser.name : 'Almathar Tracker'}`
+  ];
+
+  const body = encodeURIComponent(lines.join('\n'));
+  return `mailto:${to}${cc ? '?cc=' + cc : '?'}${cc ? '&' : ''}subject=${subject}&body=${body}`;
+}
+
+function emailOwner(id) {
+  const g = state.gaps.find(x => x.id === id);
+  if (!g) return;
+  const link = buildMailto(g);
+  if (!link) {
+    toast('Owner has no email in the People tab', true);
+    return;
+  }
+  window.location.href = link;
+}
+
 // ----- Inbox -----
 function applySourceFilter(items) {
   if (state.sourceFilter === 'sim') return items.filter(g => (g.source || 'sim') === 'sim');
   if (state.sourceFilter === 'snag') return items.filter(g => g.source === 'snag');
   return items;
+}
+
+// Render an Owner picker for a specific gap.
+// Returns HTML for a select element with options filtered to the gap's workstream.
+function renderOwnerPicker(gap) {
+  const wsPeople = peopleForWorkstream(gap.domain);
+  const allPeople = state.people.slice();
+  const currentLabel = gap.assignedTo || '';
+  const currentPerson = personByLabel(currentLabel);
+
+  // Build option list. If current value is a legacy free-text not matching any person,
+  // include it as a disabled option so users can see it before re-picking.
+  const opts = ['<option value="">— no owner —</option>'];
+
+  if (wsPeople.length > 0) {
+    opts.push(`<optgroup label="${escapeHtml(domainOf(gap.domain).label)}">`);
+    wsPeople.forEach(p => {
+      const label = userLabel(p);
+      opts.push(`<option value="${escapeHtml(label)}" ${label === currentLabel ? 'selected' : ''}>${escapeHtml(p.name)}${p.role ? ' — ' + escapeHtml(p.role) : ''}</option>`);
+    });
+    opts.push('</optgroup>');
+  }
+
+  const others = allPeople.filter(p => p.workstream !== gap.domain);
+  if (others.length > 0) {
+    opts.push('<optgroup label="Other workstreams">');
+    others.forEach(p => {
+      const label = userLabel(p);
+      opts.push(`<option value="${escapeHtml(label)}" ${label === currentLabel ? 'selected' : ''}>${escapeHtml(p.name)} — ${escapeHtml(domainOf(p.workstream).short || p.workstream)}</option>`);
+    });
+    opts.push('</optgroup>');
+  }
+
+  // Preserve legacy free-text value if it doesn't match any person
+  if (currentLabel && !currentPerson) {
+    opts.push(`<optgroup label="Legacy">`);
+    opts.push(`<option value="${escapeHtml(currentLabel)}" selected>(legacy) ${escapeHtml(currentLabel)}</option>`);
+    opts.push('</optgroup>');
+  }
+
+  if (wsPeople.length === 0 && others.length === 0) {
+    return `
+      <select id="as-${gap.id}" disabled>
+        <option>No people in People tab yet</option>
+      </select>
+      <div style="font-size:11px; color:var(--warn); margin-top:4px;">
+        <i class="ti ti-alert-triangle"></i> Add people to the People tab in your Google Sheet to enable Owner selection.
+      </div>
+    `;
+  }
+
+  return `<select id="as-${gap.id}">${opts.join('')}</select>`;
 }
 
 function renderInbox() {
@@ -667,7 +770,7 @@ function renderInbox() {
         <i class="ti ti-flag-3"></i> Day-1 stoppers (${stoppers})
       </button>
       <button class="${filter === 'unassigned' ? 'active' : ''}" onclick="setInboxFilter('unassigned')">
-        <i class="ti ti-alert-circle"></i> Unassigned (${unassigned})
+        <i class="ti ti-alert-circle"></i> No owner (${unassigned})
       </button>
       <button class="${filter === 'mine' ? 'active' : ''}" onclick="setInboxFilter('mine')">
         <i class="ti ti-user"></i> Mine (${mineCount})
@@ -679,7 +782,6 @@ function renderInbox() {
       `).join('')}
     </div>
     <div id="inbox-list"></div>
-    ${userDatalistHTML('users-list-inbox')}
   `;
 
   const list = document.getElementById('inbox-list');
@@ -697,6 +799,9 @@ function renderInbox() {
     const d = domainOf(g.domain);
     const p = PRIORITY[g.priority] || PRIORITY.ME;
     const leader = leaderFor(g.domain);
+    const ownerPerson = personByLabel(g.assignedTo);
+    const canEmail = ownerPerson && ownerPerson.email;
+
     return `
       <div class="gap-item ${g.isStopper === 'YES' ? 'is-stopper' : ''}">
         <div class="gap-meta">
@@ -704,7 +809,7 @@ function renderInbox() {
           <span class="pill c-${d.ramp}"><i class="ti ${d.icon}"></i>${d.label}</span>
           <span class="pill c-${p.color}">${p.label}</span>
           ${g.isStopper === 'YES' ? '<span class="pill c-red"><i class="ti ti-flag-3"></i> Day-1 stopper</span>' : ''}
-          ${!g.assignedTo ? '<span class="pill c-amber"><i class="ti ti-alert-circle"></i> Unassigned</span>' : ''}
+          ${!g.assignedTo ? '<span class="pill c-amber"><i class="ti ti-alert-circle"></i> No owner</span>' : ''}
           <span style="color:var(--text-2); margin-left:auto;">${escapeHtml(g.sim || '—')} · ${g.date}</span>
         </div>
         ${leader ? `<div class="leader-line"><i class="ti ti-id-badge-2"></i> Workstream lead: <strong>${escapeHtml(leader.name)}</strong>${leader.staffId ? ` (${escapeHtml(leader.staffId)})` : ''}</div>` : '<div class="leader-line missing"><i class="ti ti-alert-triangle"></i> No workstream lead set — see Leaders tab</div>'}
@@ -712,8 +817,8 @@ function renderInbox() {
         ${g.photoUrl ? `<div class="inbox-photo"><a href="${escapeHtml(g.photoUrl)}" target="_blank"><img src="${escapeHtml(g.photoUrl)}" alt="Photo" referrerpolicy="no-referrer"></a></div>` : ''}
         <div class="inbox-fields">
           <div>
-            <label>Assigned to (team member)</label>
-            <input id="as-${g.id}" list="users-list-inbox" value="${escapeHtml(g.assignedTo || '')}" placeholder="Type name (staffId)" autocomplete="off">
+            <label>Owner</label>
+            ${renderOwnerPicker(g)}
           </div>
           <div>
             <label>Target date</label>
@@ -737,7 +842,10 @@ function renderInbox() {
             Logged by <strong>${escapeHtml(g.loggedBy || '—')}</strong>
             ${g.lastEditedBy ? ` · Last edited by <strong>${escapeHtml(g.lastEditedBy)}</strong> on ${escapeHtml(fmtDateTime(g.updatedAt))}` : ''}
           </div>
-          <button class="primary" onclick="saveResponse('${g.id}')" style="margin-left:auto;"><i class="ti ti-check"></i> Save</button>
+          <button onclick="emailOwner('${g.id}')" ${!canEmail ? 'disabled' : ''} title="${canEmail ? 'Email the owner' : (g.assignedTo ? 'Owner has no email in the People tab' : 'No owner set yet')}">
+            <i class="ti ti-mail"></i> Email owner
+          </button>
+          <button class="primary" onclick="saveResponse('${g.id}')"><i class="ti ti-check"></i> Save</button>
         </div>
       </div>
     `;
@@ -751,20 +859,15 @@ async function saveResponse(id) {
   if (!state.currentUser) { promptForIdentity(); return; }
   const g = state.gaps.find(x => x.id === id);
   if (!g) return;
-  const assignedRaw = document.getElementById('as-' + id).value;
-  const resolution = resolveAssignee(assignedRaw);
-  if (assignedRaw && resolution.error) { alert(resolution.error); return; }
-  const newUsers = (resolution.isNew && resolution.user) ? [resolution.user] : [];
-
   g.actionPlan = document.getElementById('ap-' + id).value;
   g.status = document.getElementById('st-' + id).value;
-  g.assignedTo = resolution.user ? userLabel(resolution.user) : '';
+  g.assignedTo = document.getElementById('as-' + id).value || '';
   g.due = document.getElementById('du-' + id).value;
   g.isStopper = document.getElementById('sp-' + id).checked ? 'YES' : '';
   try {
-    const saved = await apiUpsert(g, newUsers);
+    const saved = await apiUpsert(g, []);
     Object.assign(g, saved);
-    toast(newUsers.length ? `Saved · ${newUsers[0].name} added` : 'Saved');
+    toast('Saved');
     render();
   } catch (err) {
     console.error(err);
@@ -772,19 +875,19 @@ async function saveResponse(id) {
   }
 }
 
-// ----- Leaders tab -----
+// ----- Leaders tab — kept identical to v7 -----
 function renderLeaders() {
   const el = document.getElementById('view-leaders');
   el.innerHTML = `
     <div class="card" style="margin-bottom:1rem;">
       <h3 style="margin:0 0 8px; font-size:15px;">Workstream Leaders</h3>
       <p style="font-size:13px; color:var(--text-2); margin:0 0 14px;">
-        The person <strong>accountable</strong> for each workstream. Shown on every gap and escalated to on the dashboard for overdue items.
+        The person <strong>accountable</strong> for each workstream. Shown on every gap and escalated to on the dashboard for overdue items. The <strong>Owner</strong> on each gap is a different concept — the specific person doing the work, picked from the People tab in your Sheet.
       </p>
-      ${userDatalistHTML('users-list-leaders')}
       <div class="leaders-grid">
         ${DOMAINS.map(d => {
           const l = leaderFor(d.id);
+          const wsPeople = peopleForWorkstream(d.id);
           return `
             <div class="leader-card">
               <div class="leader-card-head">
@@ -800,7 +903,10 @@ function renderLeaders() {
                 ` : `<span style="color:var(--text-2); font-size:12px;">— no leader set —</span>`}
               </div>
               <div class="leader-card-foot">
-                <input id="ld-${d.id}" list="users-list-leaders" placeholder="Name (staffId)" autocomplete="off">
+                <select id="ld-${d.id}">
+                  <option value="">— pick from People tab —</option>
+                  ${wsPeople.map(p => `<option value="${escapeHtml(userLabel(p))}">${escapeHtml(p.name)}${p.role ? ' — ' + escapeHtml(p.role) : ''}</option>`).join('')}
+                </select>
                 <button class="primary" onclick="onSetLeader('${d.id}')">${l ? 'Replace' : 'Set'}</button>
               </div>
             </div>
@@ -814,14 +920,11 @@ function renderLeaders() {
 async function onSetLeader(domain) {
   if (!state.currentUser) { promptForIdentity(); return; }
   const raw = document.getElementById('ld-' + domain).value;
-  const resolution = resolveAssignee(raw);
-  if (!raw) { toast('Type a name', true); return; }
-  if (resolution.error) { alert(resolution.error); return; }
-  const target = resolution.user;
+  if (!raw) { toast('Pick a person from the dropdown', true); return; }
+  const parsed = parseUserLabel(raw);
   try {
-    await apiSetLeader(domain, target.name, target.staffId || '');
-    if (resolution.isNew) state.users.push(target);
-    toast(`Leader set: ${target.name}`);
+    await apiSetLeader(domain, parsed.name, parsed.staffId || '');
+    toast(`Leader set: ${parsed.name}`);
     render();
   } catch (err) {
     console.error(err);
@@ -909,7 +1012,7 @@ function renderDashboard() {
       <div class="stat stat-stopper"><div class="lbl">Day-1 stoppers</div><div class="num">${stoppers}</div></div>
       <div class="stat"><div class="lbl">Not fixed</div><div class="num" style="color:var(--warn);">${open}</div></div>
       <div class="stat"><div class="lbl">Critical</div><div class="num" style="color:var(--danger);">${critical}</div></div>
-      <div class="stat"><div class="lbl">Unassigned</div><div class="num" style="color:var(--warn);">${unassigned}</div></div>
+      <div class="stat"><div class="lbl">No owner</div><div class="num" style="color:var(--warn);">${unassigned}</div></div>
       <div class="stat"><div class="lbl">% fixed</div><div class="num" style="color:var(--success);">${pctClosed}%</div></div>
     </div>
 
@@ -945,7 +1048,7 @@ function renderDashboard() {
             <th>Flag</th>
             <th>Workstream</th>
             <th>Gap</th>
-            <th>Assigned</th>
+            <th>Owner</th>
             <th>Escalation</th>
             <th>Due</th>
           </tr>
