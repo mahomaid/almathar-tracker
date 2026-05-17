@@ -337,6 +337,26 @@ function fmtDateTime(s) {
   } catch (e) { return s; }
 }
 
+// ----- Theme (light/dark) -----
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(t) {
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  try { localStorage.setItem('almathar_theme', t); } catch (e) {}
+  // Swap toggle icon to indicate the action it will take next
+  const icon = document.getElementById('theme-toggle-icon');
+  if (icon) icon.className = t === 'light' ? 'ti ti-moon' : 'ti ti-sun';
+  // Re-render so any charts pick up the new colors
+  if (state.activeTab === 'dashboard') render();
+}
+
+function toggleTheme() {
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+}
+
 function setTab(t) {
   ['capture', 'inbox', 'dashboard', 'leaders'].forEach(x => {
     const v = document.getElementById('view-' + x);
@@ -548,13 +568,17 @@ async function addQuickGap() {
 
   state.quickStopper = document.getElementById('q-stopper').checked;
 
+  // Auto-populate owner = workstream leader (v9). If no leader is set, leave blank.
+  const wsLead = leaderFor(state.quickDomain);
+  const defaultOwner = wsLead ? userLabel(wsLead) : '';
+
   const gap = {
     id: 'g_' + Date.now(),
     sim, date: state.currentDate,
     domain: state.quickDomain, text,
     priority: state.quickPriority,
     owner: domainOf(state.quickDomain).label,
-    assignedTo: '', actionPlan: '', status: 'NF', due: '',
+    assignedTo: defaultOwner, actionPlan: '', status: 'NF', due: '',
     isStopper: state.quickStopper ? 'YES' : '',
     photoUrl: state.pendingPhoto ? state.pendingPhoto.url : '',
     photoId: state.pendingPhoto ? state.pendingPhoto.id : '',
@@ -566,7 +590,9 @@ async function addQuickGap() {
     const saved = await apiUpsert(gap, []);
     state.gaps.push(saved);
     const what = state.captureSource === 'sim' ? 'Sim gap' : 'Snag';
-    toast(state.quickStopper ? `${what} logged · Day-1 stopper` : `${what} logged`);
+    let msg = state.quickStopper ? `${what} logged · Day-1 stopper` : `${what} logged`;
+    if (defaultOwner) msg += ` · Owner: ${defaultOwner.split('(')[0].trim()}`;
+    toast(msg);
     document.getElementById('q-text').value = '';
     document.getElementById('q-stopper').checked = false;
     state.quickStopper = false;
@@ -944,49 +970,88 @@ async function onClearLeader(domain) {
   }
 }
 
-// ----- Dashboard -----
+// ----- Dashboard (v9: stopper panel + scorecards + charts) -----
+
+// Keep references to Chart.js instances so we can destroy them on re-render
+let _charts = { status: null, byWorkstream: null, stoppers: null };
+
+function destroyCharts() {
+  Object.keys(_charts).forEach(k => {
+    if (_charts[k]) { try { _charts[k].destroy(); } catch (e) {} _charts[k] = null; }
+  });
+}
+
+function daysBetween(a, b) {
+  const ms = new Date(b).getTime() - new Date(a).getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
+function workstreamScorecard(d, filtered) {
+  const items = filtered.filter(g => g.domain === d.id);
+  if (items.length === 0) return null;
+  const open = items.filter(g => g.status === 'NF').length;
+  const fixed = items.filter(g => g.status === 'FX').length;
+  const deferred = items.filter(g => g.status === 'DF').length;
+  const stoppers = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX').length;
+  const noOwner = items.filter(g => !g.assignedTo && g.status === 'NF').length;
+  const closurePct = items.length ? Math.round(fixed / items.length * 100) : 0;
+  // Avg days from createdAt to updatedAt for fixed items
+  const fixedItems = items.filter(g => g.status === 'FX' && g.createdAt && g.updatedAt);
+  let avgDays = null;
+  if (fixedItems.length) {
+    const totalDays = fixedItems.reduce((sum, g) => sum + Math.max(0, daysBetween(g.createdAt, g.updatedAt)), 0);
+    avgDays = Math.round(totalDays / fixedItems.length);
+  }
+  return {
+    ...d,
+    total: items.length, open, fixed, deferred, stoppers, noOwner, closurePct, avgDays,
+    leader: leaderFor(d.id)
+  };
+}
+
 function renderDashboard() {
+  destroyCharts();
   const el = document.getElementById('view-dashboard');
   const filtered = applySourceFilter(state.gaps);
   const total = filtered.length;
   const open = filtered.filter(g => g.status === 'NF').length;
   const fixed = filtered.filter(g => g.status === 'FX').length;
+  const deferred = filtered.filter(g => g.status === 'DF').length;
   const critical = filtered.filter(g => g.priority === 'CR' && g.status === 'NF').length;
   const unassigned = filtered.filter(g => !g.assignedTo && g.status === 'NF').length;
-  const stoppers = filtered.filter(g => g.isStopper === 'YES' && g.status !== 'FX').length;
+  const stopperItems = filtered.filter(g => g.isStopper === 'YES' && g.status !== 'FX');
+  const stoppers = stopperItems.length;
   const pctClosed = total ? Math.round(fixed / total * 100) : 0;
 
   const simCount = state.gaps.filter(g => (g.source || 'sim') === 'sim').length;
   const snagCount = state.gaps.filter(g => g.source === 'snag').length;
 
-  const byDomain = DOMAINS.map(d => {
-    const items = filtered.filter(g => g.domain === d.id);
-    return {
-      ...d,
-      total: items.length,
-      open: items.filter(g => g.status === 'NF').length,
-      stoppers: items.filter(g => g.isStopper === 'YES' && g.status !== 'FX').length,
-      done: items.filter(g => g.status === 'FX').length,
-      leader: leaderFor(d.id)
-    };
-  }).filter(d => d.total > 0);
+  // Per-workstream scorecards, sorted: most stoppers first, then most open
+  const scorecards = DOMAINS
+    .map(d => workstreamScorecard(d, filtered))
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b.stoppers !== a.stoppers) return b.stoppers - a.stoppers;
+      return b.open - a.open;
+    });
 
+  // Open items table (same as before but with days-open + days-overdue columns)
   const today = new Date(state.currentDate);
   const openItems = filtered
     .filter(g => g.status === 'NF')
     .map(g => {
       let rag = 'green';
-      let overdue = false;
+      let overdueDays = 0;
       if (!g.due) rag = 'amber';
       else {
-        const due = new Date(g.due);
-        const days = Math.round((due - today) / (1000 * 60 * 60 * 24));
-        if (days < 0) { rag = 'red'; overdue = true; }
-        else if (days <= 3) rag = 'amber';
+        const days = daysBetween(g.due, state.currentDate); // positive = overdue
+        if (days > 0) { rag = 'red'; overdueDays = days; }
+        else if (days >= -3) rag = 'amber';
       }
       if (g.isStopper === 'YES') rag = 'red';
       if (g.priority === 'CR') rag = 'red';
-      return { ...g, rag, overdue, leader: leaderFor(g.domain) };
+      const ageDays = g.createdAt ? Math.max(0, daysBetween(g.createdAt, state.currentDate)) : null;
+      return { ...g, rag, overdueDays, ageDays, leader: leaderFor(g.domain) };
     })
     .sort((a, b) => {
       if ((a.isStopper === 'YES') !== (b.isStopper === 'YES')) return a.isStopper === 'YES' ? -1 : 1;
@@ -1001,9 +1066,32 @@ function renderDashboard() {
     </div>
 
     ${stoppers > 0 ? `
-      <div class="stopper-banner">
-        <i class="ti ti-flag-3"></i>
-        <strong>${stoppers}</strong> Day-1 stopper${stoppers === 1 ? '' : 's'} open ${state.sourceFilter === 'all' ? '' : `in ${state.sourceFilter === 'sim' ? 'simulation' : 'snag list'}`} — Day 0 launch at risk if not resolved.
+      <div class="stopper-section">
+        <div class="stopper-section-head">
+          <i class="ti ti-flag-3"></i>
+          <h3>${stoppers} Day-1 stopper${stoppers === 1 ? '' : 's'} open</h3>
+          <span>Day 0 launch at risk if not resolved</span>
+        </div>
+        <div class="stopper-cards">
+          ${stopperItems.slice(0, 12).map(g => {
+            const d = domainOf(g.domain);
+            const age = g.createdAt ? Math.max(0, daysBetween(g.createdAt, state.currentDate)) : null;
+            const lead = leaderFor(g.domain);
+            return `
+              <div class="stopper-card" onclick="setTab('inbox'); setTimeout(()=>{state.inboxFilter='stoppers'; render();}, 50)">
+                <div class="stopper-card-head">
+                  <span class="pill c-${d.ramp}"><i class="ti ${d.icon}"></i>${d.short}</span>
+                  ${age !== null ? `<span class="stopper-age">${age} day${age === 1 ? '' : 's'} open</span>` : ''}
+                </div>
+                <div class="stopper-card-text">${escapeHtml(g.text)}</div>
+                <div class="stopper-card-foot">
+                  <span><i class="ti ti-user"></i> Owner: <strong>${escapeHtml(g.assignedTo ? g.assignedTo.split('(')[0].trim() : 'unassigned')}</strong></span>
+                  ${lead ? `<span><i class="ti ti-id-badge-2"></i> Lead: ${escapeHtml(lead.name)}</span>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
       </div>
     ` : ''}
 
@@ -1016,29 +1104,48 @@ function renderDashboard() {
       <div class="stat"><div class="lbl">% fixed</div><div class="num" style="color:var(--success);">${pctClosed}%</div></div>
     </div>
 
-    <div style="font-size:14px; font-weight:500; margin-bottom:8px;">Gaps by workstream</div>
-    <div class="card" style="margin-bottom:1rem;">
-      ${byDomain.length === 0 ? '<div class="empty">No data yet.</div>' : byDomain.map(d => {
-        const openPct = d.total ? (d.open / d.total * 100) : 0;
-        const donePct = d.total ? (d.done / d.total * 100) : 0;
-        return `
-          <div class="bar-row">
-            <div class="bar-label">
-              <i class="ti ${d.icon}"></i>
-              <span>${d.label}</span>
-              ${d.leader ? `<span class="leader-mini" title="${escapeHtml(d.leader.name)}">${escapeHtml(d.leader.name.split(' ').slice(-1)[0] || d.leader.name)}</span>` : '<span class="leader-mini missing">no lead</span>'}
-            </div>
-            <div class="bar">
-              <div class="bar-done" style="width:${donePct}%;"></div>
-              <div class="bar-open" style="width:${openPct}%;"></div>
-            </div>
-            <div class="bar-count">${d.done}/${d.total}${d.stoppers ? ` · <span style="color:var(--danger);"><i class="ti ti-flag-3"></i> ${d.stoppers}</span>` : ''}</div>
-          </div>
-        `;
-      }).join('')}
+    <div class="charts-row">
+      <div class="chart-card">
+        <h4>Status breakdown</h4>
+        ${total === 0 ? '<div class="empty">No data yet.</div>' : '<canvas id="chart-status"></canvas>'}
+      </div>
+      <div class="chart-card chart-card-wide">
+        <h4>Open gaps by workstream</h4>
+        ${scorecards.filter(s => s.open > 0).length === 0 ? '<div class="empty">No open gaps.</div>' : '<canvas id="chart-byws"></canvas>'}
+      </div>
     </div>
 
-    <div style="font-size:14px; font-weight:500; margin-bottom:8px;">Open action items (stoppers first, then RAG)</div>
+    ${stoppers > 0 ? `
+      <div class="chart-card" style="margin-bottom:1rem;">
+        <h4>Stoppers by workstream</h4>
+        <canvas id="chart-stoppers"></canvas>
+      </div>
+    ` : ''}
+
+    <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Workstream scorecards</div>
+    <div class="scorecard-grid">
+      ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => `
+        <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}">
+          <div class="scorecard-head">
+            <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.label}</span>
+            ${s.stoppers > 0 ? `<span class="pill c-red"><i class="ti ti-flag-3"></i> ${s.stoppers}</span>` : ''}
+          </div>
+          <div class="scorecard-numbers">
+            <div><div class="sc-lbl">Total</div><div class="sc-num">${s.total}</div></div>
+            <div><div class="sc-lbl">Open</div><div class="sc-num" style="color:var(--warn);">${s.open}</div></div>
+            <div><div class="sc-lbl">Fixed</div><div class="sc-num" style="color:var(--success);">${s.fixed}</div></div>
+            <div><div class="sc-lbl">% fixed</div><div class="sc-num">${s.closurePct}%</div></div>
+          </div>
+          <div class="scorecard-meta">
+            ${s.leader ? `<span><i class="ti ti-id-badge-2"></i> ${escapeHtml(s.leader.name)}</span>` : '<span class="missing"><i class="ti ti-alert-triangle"></i> no lead</span>'}
+            ${s.noOwner > 0 ? `<span class="missing"><i class="ti ti-alert-circle"></i> ${s.noOwner} no owner</span>` : ''}
+            ${s.avgDays !== null ? `<span><i class="ti ti-clock"></i> avg ${s.avgDays}d to fix</span>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Open action items (stoppers first, then RAG)</div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table>
         <thead>
@@ -1049,28 +1156,30 @@ function renderDashboard() {
             <th>Workstream</th>
             <th>Gap</th>
             <th>Owner</th>
-            <th>Escalation</th>
+            <th>Lead</th>
+            <th>Age</th>
             <th>Due</th>
           </tr>
         </thead>
         <tbody>
-          ${openItems.slice(0, 25).map(g => {
+          ${openItems.slice(0, 30).map(g => {
             const d = domainOf(g.domain);
-            const escalate = g.overdue || g.isStopper === 'YES';
+            const escalate = g.overdueDays > 0 || g.isStopper === 'YES';
             return `
-              <tr>
+              <tr class="${g.isStopper === 'YES' ? 'row-stopper' : ''}">
                 <td class="rag-${g.rag}"></td>
                 <td><span class="pill source-${g.source || 'sim'}" style="font-size:10px;">${g.source === 'snag' ? 'Snag' : 'Sim'}</span></td>
                 <td>${g.isStopper === 'YES' ? '<i class="ti ti-flag-3" style="color:var(--danger);" title="Day-1 stopper"></i>' : ''}</td>
                 <td><i class="ti ${d.icon}"></i> ${d.short}</td>
-                <td>${escapeHtml(g.text)} ${g.photoUrl ? '<i class="ti ti-photo" style="color:var(--text-2); margin-left:4px;"></i>' : ''}</td>
-                <td>${escapeHtml(g.assignedTo || '—')}</td>
+                <td>${escapeHtml(g.text)}${g.photoUrl ? ' <i class="ti ti-photo" style="color:var(--text-2);"></i>' : ''}</td>
+                <td>${escapeHtml(g.assignedTo ? g.assignedTo.split('(')[0].trim() : '—')}</td>
                 <td>${g.leader && escalate ? `<strong style="color:var(--danger);">${escapeHtml(g.leader.name)}</strong>` : (g.leader ? escapeHtml(g.leader.name) : '<span style="color:var(--text-3);">no lead</span>')}</td>
-                <td>${g.due || '—'}</td>
+                <td>${g.ageDays !== null ? g.ageDays + 'd' : '—'}</td>
+                <td>${g.due ? (g.overdueDays > 0 ? `<span style="color:var(--danger); font-weight:500;">${g.due} (${g.overdueDays}d late)</span>` : g.due) : '—'}</td>
               </tr>
             `;
           }).join('')}
-          ${openItems.length === 0 ? '<tr><td colspan="8" class="empty">All clear.</td></tr>' : ''}
+          ${openItems.length === 0 ? '<tr><td colspan="9" class="empty">All clear.</td></tr>' : ''}
         </tbody>
       </table>
     </div>
@@ -1081,7 +1190,129 @@ function renderDashboard() {
       <button onclick="window.print()"><i class="ti ti-printer"></i> Print</button>
     </div>
   `;
+
+  // Render charts after DOM is in place
+  if (typeof Chart === 'undefined') return; // graceful fallback if Chart.js fails to load
+
+  const baseFont = { family: '-apple-system, BlinkMacSystemFont, sans-serif', size: 12 };
+
+  // Pull current theme colors so charts follow light/dark
+  const css = getComputedStyle(document.documentElement);
+  const colors = {
+    open: css.getPropertyValue('--chart-open').trim(),
+    openBg: css.getPropertyValue('--chart-open-bg').trim(),
+    fixed: css.getPropertyValue('--chart-fixed').trim(),
+    fixedBg: css.getPropertyValue('--chart-fixed-bg').trim(),
+    deferred: css.getPropertyValue('--chart-deferred').trim(),
+    deferredBg: css.getPropertyValue('--chart-deferred-bg').trim(),
+    danger: css.getPropertyValue('--chart-danger').trim(),
+    dangerBg: css.getPropertyValue('--chart-danger-bg').trim(),
+    text: css.getPropertyValue('--text').trim(),
+    text2: css.getPropertyValue('--text-2').trim(),
+    border: css.getPropertyValue('--border').trim()
+  };
+  const tickColor = colors.text2;
+  const gridColor = colors.border;
+  Chart.defaults.color = colors.text2;
+  Chart.defaults.borderColor = colors.border;
+
+  // 1. Status doughnut
+  if (total > 0) {
+    const ctx = document.getElementById('chart-status');
+    if (ctx) {
+      _charts.status = new Chart(ctx.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Not fixed', 'Fixed', 'Deferred'],
+          datasets: [{
+            data: [open, fixed, deferred],
+            backgroundColor: [colors.openBg, colors.fixedBg, colors.deferredBg],
+            borderColor: [colors.open, colors.fixed, colors.deferred],
+            borderWidth: 1.5
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { font: baseFont, padding: 12, boxWidth: 12 } },
+            tooltip: { callbacks: { label: (c) => `${c.label}: ${c.parsed} (${Math.round(c.parsed/total*100)}%)` } }
+          },
+          cutout: '60%'
+        }
+      });
+    }
+  }
+
+  // 2. Horizontal bar — open gaps by workstream (only ones with open > 0)
+  const openByWs = scorecards.filter(s => s.open > 0);
+  if (openByWs.length > 0) {
+    const ctx = document.getElementById('chart-byws');
+    if (ctx) {
+      _charts.byWorkstream = new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: openByWs.map(s => s.short),
+          datasets: [{
+            label: 'Open',
+            data: openByWs.map(s => s.open),
+            backgroundColor: colors.openBg,
+            borderColor: colors.open,
+            borderWidth: 1
+          }, {
+            label: 'Fixed',
+            data: openByWs.map(s => s.fixed),
+            backgroundColor: colors.fixedBg,
+            borderColor: colors.fixed,
+            borderWidth: 1
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            x: { stacked: true, ticks: { font: baseFont, color: tickColor, stepSize: 1 }, grid: { color: gridColor } },
+            y: { stacked: true, ticks: { font: baseFont, color: tickColor }, grid: { display: false } }
+          },
+          plugins: {
+            legend: { position: 'bottom', labels: { font: baseFont, padding: 12, boxWidth: 12 } }
+          }
+        }
+      });
+    }
+  }
+
+  // 3. Vertical bar — stoppers by workstream (only renders when stoppers exist)
+  if (stoppers > 0) {
+    const stoppersByWs = scorecards.filter(s => s.stoppers > 0);
+    const ctx = document.getElementById('chart-stoppers');
+    if (ctx && stoppersByWs.length > 0) {
+      _charts.stoppers = new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: stoppersByWs.map(s => s.short),
+          datasets: [{
+            label: 'Day-1 stoppers',
+            data: stoppersByWs.map(s => s.stoppers),
+            backgroundColor: colors.dangerBg,
+            borderColor: colors.danger,
+            borderWidth: 1.5
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            y: { ticks: { font: baseFont, color: tickColor, stepSize: 1 }, grid: { color: gridColor }, beginAtZero: true },
+            x: { ticks: { font: baseFont, color: tickColor }, grid: { display: false } }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    }
+  }
 }
+
 
 function exportCSV() {
   const cols = ['id', 'source', 'sim', 'date', 'domain', 'text', 'priority', 'isStopper', 'owner', 'assignedTo', 'actionPlan', 'status', 'due', 'photoUrl', 'loggedBy', 'lastEditedBy', 'createdAt', 'updatedAt'];
@@ -1113,6 +1344,10 @@ function bootAfterAccess() {
 }
 
 function init() {
+  // Sync the theme toggle icon with the theme that the inline head script applied
+  const icon = document.getElementById('theme-toggle-icon');
+  if (icon) icon.className = currentTheme() === 'light' ? 'ti ti-moon' : 'ti ti-sun';
+
   if (!checkAccessGate()) {
     document.getElementById('access-overlay').style.display = 'flex';
     setTimeout(() => document.getElementById('access-input').focus(), 50);
