@@ -86,6 +86,20 @@ function fullSimId() {
 
 function leaderFor(domainId) { return state.leaders.find(l => l.domain === domainId) || null; }
 
+// v11: Emergency override ID is duplicated here to match the backend.
+// If you change EMERGENCY_OVERRIDE_ID in Code.gs, change it here too.
+const EMERGENCY_OVERRIDE_ID = '1517385';
+
+function canCurrentUserLogSim() {
+  if (!state.currentUser) return false;
+  const staffId = String(state.currentUser.staffId || '').trim();
+  if (!staffId) return false;
+  if (staffId === EMERGENCY_OVERRIDE_ID) return true;
+  if (state.roleFlags && state.roleFlags.some(f => f.staffId === staffId && f.canLogSim)) return true;
+  if (state.leaders && state.leaders.some(l => String(l.staffId || '').trim() === staffId)) return true;
+  return false;
+}
+
 // Look up a person from the People tab by their display label.
 // Format used: "Name (staffId)" — same as userLabel.
 function personByLabel(label) {
@@ -396,18 +410,24 @@ function applyUrlContext() {
   if (p.source === 'sim' || p.source === 'snag') state.captureSource = p.source;
 }
 
-// ----- Capture (unchanged from v7 — owner not set at logging time) -----
+// ----- Capture -----
 function renderCapture() {
   const el = document.getElementById('view-capture');
+  const simAllowed = canCurrentUserLogSim();
+  // If the user can't log sim, force snag mode regardless of prior selection.
+  if (!simAllowed && state.captureSource === 'sim') state.captureSource = 'snag';
+
   el.innerHTML = `
-    <div class="source-toggle">
-      <button class="${state.captureSource === 'snag' ? 'active' : ''}" onclick="setCaptureSource('snag')">
-        <i class="ti ti-clipboard-list"></i> Snag list
-      </button>
-      <button class="${state.captureSource === 'sim' ? 'active' : ''}" onclick="setCaptureSource('sim')">
-        <i class="ti ti-flask"></i> Simulation gap
-      </button>
-    </div>
+    ${simAllowed ? `
+      <div class="source-toggle">
+        <button class="${state.captureSource === 'snag' ? 'active' : ''}" onclick="setCaptureSource('snag')">
+          <i class="ti ti-clipboard-list"></i> Snag list
+        </button>
+        <button class="${state.captureSource === 'sim' ? 'active' : ''}" onclick="setCaptureSource('sim')">
+          <i class="ti ti-flask"></i> Simulation gap
+        </button>
+      </div>
+    ` : ''}
 
     <div class="source-hint">
       ${state.captureSource === 'sim'
@@ -904,6 +924,12 @@ async function saveResponse(id) {
 // ----- Leaders tab — kept identical to v7 -----
 function renderLeaders() {
   const el = document.getElementById('view-leaders');
+  // For sim loggers: derive the union of authorized people for display.
+  const flaggedIds = new Set((state.roleFlags || []).filter(f => f.canLogSim).map(f => f.staffId));
+  const leaderIds = new Set((state.leaders || []).map(l => String(l.staffId || '')).filter(x => x));
+  // For "add" UI: people from People tab who can be flagged.
+  const allPeopleSorted = [...state.people].sort((a, b) => a.name.localeCompare(b.name));
+
   el.innerHTML = `
     <div class="card" style="margin-bottom:1rem;">
       <h3 style="margin:0 0 8px; font-size:15px;">Workstream Leaders</h3>
@@ -940,7 +966,79 @@ function renderLeaders() {
         }).join('')}
       </div>
     </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px; font-size:15px;">Authorized Simulation Loggers</h3>
+      <p style="font-size:13px; color:var(--text-2); margin:0 0 14px;">
+        Only these people can log <strong>Simulation gaps</strong>. Snag list logging is open to everyone.
+        Workstream Leaders (above) are automatically authorized — they don't need to be listed here.
+      </p>
+      ${flaggedIds.size === 0 ? `
+        <div class="empty" style="text-align:left; padding: 0 0 12px;">No one in the explicit list. Only Workstream Leaders${EMERGENCY_OVERRIDE_ID ? ' and the CMO' : ''} can log sim gaps.</div>
+      ` : `
+        <ul class="sim-logger-list">
+          ${[...flaggedIds].map(sid => {
+            const person = state.people.find(p => p.staffId === sid);
+            const name = person ? person.name : `Staff ID ${sid}`;
+            const isAlsoLeader = leaderIds.has(sid);
+            return `
+              <li>
+                <span><strong>${escapeHtml(name)}</strong> <span class="who-id">${escapeHtml(sid)}</span>${isAlsoLeader ? ' <span class="pill c-green" style="font-size:10px;">also a leader</span>' : ''}</span>
+                <button class="ghost-btn" onclick="onClearSimLogger('${escapeHtml(sid)}')"><i class="ti ti-x"></i> Remove</button>
+              </li>
+            `;
+          }).join('')}
+        </ul>
+      `}
+      <div class="leader-card-foot" style="margin-top:10px;">
+        <select id="sim-logger-picker">
+          <option value="">— pick someone from People tab —</option>
+          ${allPeopleSorted.filter(p => !flaggedIds.has(p.staffId)).map(p =>
+            `<option value="${escapeHtml(p.staffId)}">${escapeHtml(p.name)} (${escapeHtml(p.staffId)})${p.role ? ' — ' + escapeHtml(p.role) : ''}</option>`
+          ).join('')}
+        </select>
+        <button class="primary" onclick="onAddSimLogger()">Add</button>
+      </div>
+    </div>
   `;
+}
+
+async function onAddSimLogger() {
+  if (!state.currentUser) { promptForIdentity(); return; }
+  const sid = document.getElementById('sim-logger-picker').value;
+  if (!sid) { toast('Pick a person from the dropdown', true); return; }
+  try {
+    const res = await fetch(window.API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'setRoleFlag', staffId: sid, canLogSim: true, user: userLabel(state.currentUser) || 'web' })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'failed');
+    state.roleFlags = data.roleFlags || [];
+    toast('Added');
+    render();
+  } catch (err) {
+    console.error(err);
+    toast('Save failed', true);
+  }
+}
+
+async function onClearSimLogger(staffId) {
+  if (!confirm('Remove this person from authorized simulation loggers?')) return;
+  try {
+    const res = await fetch(window.API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'clearRoleFlag', staffId, user: userLabel(state.currentUser) || 'web' })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'failed');
+    state.roleFlags = data.roleFlags || [];
+    toast('Removed');
+    render();
+  } catch (err) {
+    console.error(err);
+    toast('Remove failed', true);
+  }
 }
 
 async function onSetLeader(domain) {
