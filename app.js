@@ -6,7 +6,7 @@
 //   - "Email Owner" button on each gap (mailto: link, opens email client)
 //   - Legacy free-text assignedTo values are preserved and displayed
 
-const AREA_CODES = ['ED', 'IP', 'OP', 'ICU', 'OR', 'Radiology', 'Lab', 'Pharmacy', 'Maternity', 'Admin'];
+const AREA_CODES = ['ED', 'IP', 'OP', 'ICU', 'OR', 'Radiology', 'Lab', 'Pharmacy', 'Maternity', 'Admin', 'Other'];
 
 const DOMAINS = [
   { id: 'billing',     label: 'Billing & Registration',    short: 'Billing',     icon: 'ti-receipt',        ramp: 'blue'   },
@@ -89,12 +89,14 @@ function leaderFor(domainId) { return state.leaders.find(l => l.domain === domai
 // v11: Emergency override ID is duplicated here to match the backend.
 // If you change EMERGENCY_OVERRIDE_ID in Code.gs, change it here too.
 const EMERGENCY_OVERRIDE_ID = '1517385';
+const HARDCODED_SIM_LOGGER_IDS = ['84027', '1517962'];
 
 function canCurrentUserLogSim() {
   if (!state.currentUser) return false;
   const staffId = String(state.currentUser.staffId || '').trim();
   if (!staffId) return false;
   if (staffId === EMERGENCY_OVERRIDE_ID) return true;
+  if (HARDCODED_SIM_LOGGER_IDS.indexOf(staffId) !== -1) return true;
   if (state.roleFlags && state.roleFlags.some(f => f.staffId === staffId && f.canLogSim)) return true;
   if (state.leaders && state.leaders.some(l => String(l.staffId || '').trim() === staffId)) return true;
   return false;
@@ -451,7 +453,15 @@ function renderCapture() {
             <div class="sim-tag" id="sim-preview">${escapeHtml(fullSimId())}</div>
           </div>
         </div>
-      ` : ''}
+      ` : `
+        <div class="snag-area-row">
+          <label>Area (optional)</label>
+          <select id="q-area-snag">
+            <option value="">— no area —</option>
+            ${AREA_CODES.map(a => `<option value="${a}" ${a === state.currentArea ? 'selected' : ''}>${a}</option>`).join('')}
+          </select>
+        </div>
+      `}
 
       <div class="quick-label">1. Workstream</div>
       <div class="chip-row chip-grid">
@@ -584,6 +594,14 @@ async function addQuickGap() {
     state.currentSerial = serial;
     sim = fullSimId();
     if (!serial) { toast('Sim ID needs a serial number', true); return; }
+  } else {
+    // Snag mode: optional area saved into the same field, no serial.
+    const areaEl = document.getElementById('q-area-snag');
+    const areaVal = areaEl ? areaEl.value : '';
+    if (areaVal) {
+      sim = areaVal;
+      state.currentArea = areaVal;  // remember for next snag
+    }
   }
 
   state.quickStopper = document.getElementById('q-stopper').checked;
