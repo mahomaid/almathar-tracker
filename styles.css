@@ -507,6 +507,13 @@ button:disabled:hover {
 .scorecard-meta .missing { color: var(--warn); }
 
 /* Stopper row highlighting in open items table */
+/* v12: deleted item styling */
+.gap-item:has(textarea:disabled),
+.gap-item.is-deleted {
+  opacity: 0.7;
+  background: var(--bg-3);
+}
+
 tr.row-stopper { background: var(--danger-bg); }
 tr.row-stopper:hover { background: var(--danger-bg); filter: brightness(1.1); }
 
