@@ -51,6 +51,11 @@
   --c-gray-bg: rgba(180, 180, 180, 0.10);
   --c-gray-fg: #b4b4b0;
   --btn-primary-hover: #2c3036;
+
+  /* Primary button — dark mode uses a vivid blue, not the near-white text color */
+  --btn-primary-bg: #3b82f6;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover-bg: #2563eb;
 }
 
 /* Light mode override — original palette restored */
@@ -90,6 +95,11 @@
   --c-gray-bg: #f1efe8;
   --c-gray-fg: #444441;
   --btn-primary-hover: #333;
+
+  /* Primary button — light mode uses near-black background */
+  --btn-primary-bg: #1a1a1a;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover-bg: #333333;
 }
 
 * { box-sizing: border-box; }
@@ -138,8 +148,8 @@ body {
 button { font-family: inherit; font-size: 13px; padding: 9px 14px; border-radius: var(--radius); border: 0.5px solid var(--border-2); background: transparent; cursor: pointer; color: var(--text); transition: background 0.15s, transform 0.05s; min-height: 38px; }
 button:hover { background: var(--bg-2); }
 button:active { transform: scale(0.98); }
-button.primary { background: var(--text); color: white; border-color: var(--text); }
-button.primary:hover { background: var(--btn-primary-hover); }
+button.primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: var(--btn-primary-bg); }
+button.primary:hover { background: var(--btn-primary-hover-bg); border-color: var(--btn-primary-hover-bg); }
 button.primary.big { padding: 14px 28px; font-size: 15px; min-height: 50px; width: 100%; }
 button.active { background: var(--bg-2); }
 button.ghost-btn { border: none; padding: 6px 10px; min-height: 32px; }
