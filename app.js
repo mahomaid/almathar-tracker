@@ -1154,6 +1154,17 @@ function setInboxFilter(f) { state.inboxFilter = f; render(); }
 function setSourceFilter(s) { state.sourceFilter = s; state.inboxFilter = 'all'; render(); }
 function setShowDeleted(v) { state.showDeleted = !!v; state.inboxFilter = 'all'; render(); }
 
+// v13.2: Click a scorecard on dashboard → jump to Team Inbox filtered to that workstream
+function jumpToWorkstreamInbox(domainId) {
+  setTab('inbox');
+  setTimeout(() => {
+    state.sourceFilter = 'all';
+    state.showDeleted = false;
+    state.inboxFilter = domainId;
+    render();
+  }, 50);
+}
+
 async function saveResponse(id) {
   if (!state.currentUser) { promptForIdentity(); return; }
   const g = state.gaps.find(x => x.id === id);
@@ -1477,7 +1488,7 @@ function renderDashboard() {
     <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Workstream scorecards</div>
     <div class="scorecard-grid">
       ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => `
-        <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}">
+        <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
           <div class="scorecard-head">
             <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.label}</span>
             ${s.stoppers > 0 ? `<span class="pill c-red"><i class="ti ti-flag-3"></i> ${s.stoppers}</span>` : ''}
@@ -1595,11 +1606,17 @@ function renderDashboard() {
     }
   }
 
-  // 2. Horizontal bar — open gaps by workstream (only ones with open > 0)
+  // 2. Horizontal bar — open gaps by workstream (all workstreams that have any open gaps)
   const openByWs = scorecards.filter(s => s.open > 0);
   if (openByWs.length > 0) {
     const ctx = document.getElementById('chart-byws');
     if (ctx) {
+      // Grow the canvas vertically so every workstream gets a visible row.
+      // ~32px per workstream + 60px for legend + padding.
+      const dynHeight = Math.max(240, openByWs.length * 32 + 80);
+      ctx.parentElement.style.height = dynHeight + 'px';
+      ctx.style.maxHeight = 'none';
+
       _charts.byWorkstream = new Chart(ctx.getContext('2d'), {
         type: 'bar',
         data: {
@@ -1627,6 +1644,26 @@ function renderDashboard() {
           },
           plugins: {
             legend: { position: 'bottom', labels: { font: baseFont, padding: 12, boxWidth: 12 } }
+          },
+          // v13.2: draw the open count at the end of each bar
+          animation: {
+            onComplete: function () {
+              const chart = this;
+              const cctx = chart.ctx;
+              cctx.font = baseFont.size + 'px ' + baseFont.family;
+              cctx.fillStyle = colors.text;
+              cctx.textBaseline = 'middle';
+              cctx.textAlign = 'left';
+              chart.data.datasets.forEach((dataset, di) => {
+                const meta = chart.getDatasetMeta(di);
+                meta.data.forEach((bar, i) => {
+                  const value = dataset.data[i];
+                  if (value > 0) {
+                    cctx.fillText(value, bar.x + 4, bar.y);
+                  }
+                });
+              });
+            }
           }
         }
       });
@@ -1658,6 +1695,25 @@ function renderDashboard() {
           },
           plugins: {
             legend: { display: false }
+          },
+          animation: {
+            onComplete: function () {
+              const chart = this;
+              const cctx = chart.ctx;
+              cctx.font = '600 ' + baseFont.size + 'px ' + baseFont.family;
+              cctx.fillStyle = colors.danger;
+              cctx.textBaseline = 'bottom';
+              cctx.textAlign = 'center';
+              chart.data.datasets.forEach((dataset, di) => {
+                const meta = chart.getDatasetMeta(di);
+                meta.data.forEach((bar, i) => {
+                  const value = dataset.data[i];
+                  if (value > 0) {
+                    cctx.fillText(value, bar.x, bar.y - 4);
+                  }
+                });
+              });
+            }
           }
         }
       });
