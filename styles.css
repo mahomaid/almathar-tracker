@@ -489,7 +489,14 @@ button:disabled:hover {
   border: 0.5px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 12px 14px;
+  cursor: pointer;
+  transition: transform 0.05s, box-shadow 0.15s, border-color 0.15s;
 }
+.scorecard:hover {
+  border-color: var(--border-2);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.scorecard:active { transform: scale(0.99); }
 .scorecard.has-stoppers {
   border-color: var(--danger);
   border-width: 1px;
