@@ -37,7 +37,7 @@ const PRIORITY = {
   LO: { label: 'Low',      color: 'gray' }
 };
 
-const STATUS = { NF: 'Not fixed', FX: 'Fixed', DF: 'Deferred' };
+const STATUS = { NF: 'Not fixed', FX: 'Fixed', DF: 'Deferred', DEL: 'Deleted' };
 
 const state = {
   gaps: [],
@@ -51,6 +51,7 @@ const state = {
   currentDate: new Date().toISOString().slice(0, 10),
   inboxFilter: 'all',
   sourceFilter: 'all',
+  showDeleted: false,
   captureSource: 'snag',
   activeTab: 'capture',
   quickDomain: null,
@@ -100,6 +101,28 @@ function canCurrentUserLogSim() {
   if (state.roleFlags && state.roleFlags.some(f => f.staffId === staffId && f.canLogSim)) return true;
   if (state.leaders && state.leaders.some(l => String(l.staffId || '').trim() === staffId)) return true;
   return false;
+}
+
+// v12 — Returns true if the current user is "authorized" (leader / hardcoded / override).
+// They can delete anything and recover deleted items.
+function isAuthorizedUser() {
+  if (!state.currentUser) return false;
+  const staffId = String(state.currentUser.staffId || '').trim();
+  if (!staffId) return false;
+  if (staffId === EMERGENCY_OVERRIDE_ID) return true;
+  if (HARDCODED_SIM_LOGGER_IDS.indexOf(staffId) !== -1) return true;
+  if (state.leaders && state.leaders.some(l => String(l.staffId || '').trim() === staffId)) return true;
+  return false;
+}
+
+// v12 — Can the current user delete this specific gap?
+// - Authorized users: any gap.
+// - Everyone else: only gaps they logged themselves.
+function canCurrentUserDelete(gap) {
+  if (!gap) return false;
+  if (isAuthorizedUser()) return true;
+  const me = userLabel(state.currentUser);
+  return gap.loggedBy && String(gap.loggedBy).trim() === me;
 }
 
 // Look up a person from the People tab by their display label.
@@ -241,6 +264,16 @@ async function apiDelete(id) {
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || 'delete failed');
+}
+
+async function apiRecover(id) {
+  if (!isConfigured()) return;
+  const res = await fetch(window.API_URL, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'recover', id, user: userLabel(state.currentUser) || 'web', userObj: state.currentUser })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'recover failed');
 }
 
 async function apiSetLeader(domain, name, staffId) {
@@ -646,7 +679,7 @@ async function addQuickGap() {
 function renderCaptureList() {
   const list = document.getElementById('capture-list');
   if (!list) return;
-  const sorted = [...state.gaps].sort((a, b) => (b.id > a.id ? 1 : -1)).slice(0, 15);
+  const sorted = [...state.gaps].filter(g => g.status !== 'DEL').sort((a, b) => (b.id > a.id ? 1 : -1)).slice(0, 15);
   if (sorted.length === 0) {
     list.innerHTML = '<div class="empty">No items yet.</div>';
     return;
@@ -663,7 +696,7 @@ function renderCaptureList() {
           ${g.isStopper === 'YES' ? '<span class="pill c-red"><i class="ti ti-flag-3"></i> Stopper</span>' : ''}
           ${g.photoUrl ? `<a href="${escapeHtml(g.photoUrl)}" target="_blank" class="pill c-gray" title="View photo"><i class="ti ti-photo"></i></a>` : ''}
           <span class="gap-text">${escapeHtml(g.text)}</span>
-          <button onclick="deleteGap('${g.id}')" aria-label="Delete" class="ghost-btn"><i class="ti ti-trash"></i></button>
+          ${canCurrentUserDelete(g) ? `<button onclick="deleteGap('${g.id}')" aria-label="Delete" class="ghost-btn"><i class="ti ti-trash"></i></button>` : ''}
         </div>
         <div class="gap-byline">
           ${g.sim ? escapeHtml(g.sim) + ' · ' : ''}By ${escapeHtml(g.loggedBy || '—')}
@@ -676,15 +709,36 @@ function renderCaptureList() {
 }
 
 async function deleteGap(id) {
-  if (!confirm('Remove this item? Any attached photo will also be deleted.')) return;
+  if (!confirm('Delete this item? It will be hidden but kept in the audit log. You can recover it later if needed.')) return;
   try {
     await apiDelete(id);
-    state.gaps = state.gaps.filter(g => g.id !== id);
-    toast('Deleted');
+    // Soft delete: update the gap in-place to status DEL so the user sees it disappear
+    // from the default view but stays in state for the "show deleted" filter.
+    const g = state.gaps.find(x => x.id === id);
+    if (g) {
+      g.status = 'DEL';
+      g.deletedBy = userLabel(state.currentUser);
+      g.deletedAt = new Date().toISOString();
+    }
+    toast('Deleted (recoverable)');
     render();
   } catch (err) {
     console.error(err);
-    toast('Delete failed', true);
+    toast(err.message || 'Delete failed', true);
+  }
+}
+
+async function recoverGap(id) {
+  if (!confirm('Recover this item? It will return to status "Not fixed".')) return;
+  try {
+    await apiRecover(id);
+    const g = state.gaps.find(x => x.id === id);
+    if (g) { g.status = 'NF'; g.deletedBy = ''; g.deletedAt = ''; }
+    toast('Recovered');
+    render();
+  } catch (err) {
+    console.error(err);
+    toast(err.message || 'Recover failed', true);
   }
 }
 
@@ -751,9 +805,11 @@ function emailOwner(id) {
 
 // ----- Inbox -----
 function applySourceFilter(items) {
-  if (state.sourceFilter === 'sim') return items.filter(g => (g.source || 'sim') === 'sim');
-  if (state.sourceFilter === 'snag') return items.filter(g => g.source === 'snag');
-  return items;
+  // v12: hide DEL items unless user explicitly toggled "Show deleted"
+  let out = state.showDeleted ? items.filter(g => g.status === 'DEL') : items.filter(g => g.status !== 'DEL');
+  if (state.sourceFilter === 'sim') return out.filter(g => (g.source || 'sim') === 'sim');
+  if (state.sourceFilter === 'snag') return out.filter(g => g.source === 'snag');
+  return out;
 }
 
 // Render an Owner picker for a specific gap.
@@ -819,14 +875,17 @@ function renderInbox() {
   const unassigned = filteredBySource.filter(g => !g.assignedTo).length;
   const stoppers = filteredBySource.filter(g => g.isStopper === 'YES' && g.status !== 'FX').length;
 
-  const simCount = state.gaps.filter(g => (g.source || 'sim') === 'sim').length;
-  const snagCount = state.gaps.filter(g => g.source === 'snag').length;
+  const simCount = state.gaps.filter(g => (g.source || 'sim') === 'sim' && g.status !== 'DEL').length;
+  const snagCount = state.gaps.filter(g => g.source === 'snag' && g.status !== 'DEL').length;
+  const deletedCount = state.gaps.filter(g => g.status === 'DEL').length;
+  const canSeeDeleted = isAuthorizedUser();
 
   el.innerHTML = `
     <div class="source-filter-row">
-      <button class="${state.sourceFilter === 'all' ? 'active' : ''}" onclick="setSourceFilter('all')">All (${state.gaps.length})</button>
-      <button class="${state.sourceFilter === 'sim' ? 'active' : ''}" onclick="setSourceFilter('sim')"><i class="ti ti-flask"></i> Simulation (${simCount})</button>
-      <button class="${state.sourceFilter === 'snag' ? 'active' : ''}" onclick="setSourceFilter('snag')"><i class="ti ti-clipboard-list"></i> Snag list (${snagCount})</button>
+      <button class="${state.sourceFilter === 'all' && !state.showDeleted ? 'active' : ''}" onclick="setShowDeleted(false); setSourceFilter('all')">All (${state.gaps.filter(g => g.status !== 'DEL').length})</button>
+      <button class="${state.sourceFilter === 'sim' && !state.showDeleted ? 'active' : ''}" onclick="setShowDeleted(false); setSourceFilter('sim')"><i class="ti ti-flask"></i> Simulation (${simCount})</button>
+      <button class="${state.sourceFilter === 'snag' && !state.showDeleted ? 'active' : ''}" onclick="setShowDeleted(false); setSourceFilter('snag')"><i class="ti ti-clipboard-list"></i> Snag list (${snagCount})</button>
+      ${canSeeDeleted ? `<button class="${state.showDeleted ? 'active' : ''}" onclick="setShowDeleted(${!state.showDeleted})" title="Toggle deleted-items view"><i class="ti ti-trash"></i> Deleted (${deletedCount})</button>` : ''}
     </div>
     <div class="filter-row">
       <button class="${filter === 'all' ? 'active' : ''}" onclick="setInboxFilter('all')">All (${filteredBySource.length})</button>
@@ -900,16 +959,22 @@ function renderInbox() {
           </label>
         </div>
         <label>Action plan / response</label>
-        <textarea id="ap-${g.id}" rows="2" placeholder="What will you do, by when, who is responsible...">${escapeHtml(g.actionPlan || '')}</textarea>
+        <textarea id="ap-${g.id}" rows="2" placeholder="What will you do, by when, who is responsible..." ${g.status === 'DEL' ? 'disabled' : ''}>${escapeHtml(g.actionPlan || '')}</textarea>
         <div style="display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap;">
           <div style="font-size:11px; color:var(--text-2);">
             Logged by <strong>${escapeHtml(g.loggedBy || '—')}</strong>
             ${g.lastEditedBy ? ` · Last edited by <strong>${escapeHtml(g.lastEditedBy)}</strong> on ${escapeHtml(fmtDateTime(g.updatedAt))}` : ''}
+            ${g.status === 'DEL' && g.deletedBy ? ` · <span style="color:var(--danger);">Deleted by <strong>${escapeHtml(g.deletedBy)}</strong>${g.deletedAt ? ' on ' + escapeHtml(fmtDateTime(g.deletedAt)) : ''}</span>` : ''}
           </div>
-          <button onclick="emailOwner('${g.id}')" ${!canEmail ? 'disabled' : ''} title="${canEmail ? 'Email the owner' : (g.assignedTo ? 'Owner has no email in the People tab' : 'No owner set yet')}">
-            <i class="ti ti-mail"></i> Email owner
-          </button>
-          <button class="primary" onclick="saveResponse('${g.id}')"><i class="ti ti-check"></i> Save</button>
+          ${g.status === 'DEL' ? `
+            ${isAuthorizedUser() ? `<button class="primary" onclick="recoverGap('${g.id}')"><i class="ti ti-restore"></i> Recover</button>` : ''}
+          ` : `
+            <button onclick="emailOwner('${g.id}')" ${!canEmail ? 'disabled' : ''} title="${canEmail ? 'Email the owner' : (g.assignedTo ? 'Owner has no email in the People tab' : 'No owner set yet')}">
+              <i class="ti ti-mail"></i> Email owner
+            </button>
+            ${canCurrentUserDelete(g) ? `<button onclick="deleteGap('${g.id}')" title="Soft-delete (recoverable)"><i class="ti ti-trash"></i> Delete</button>` : ''}
+            <button class="primary" onclick="saveResponse('${g.id}')"><i class="ti ti-check"></i> Save</button>
+          `}
         </div>
       </div>
     `;
@@ -918,6 +983,7 @@ function renderInbox() {
 
 function setInboxFilter(f) { state.inboxFilter = f; render(); }
 function setSourceFilter(s) { state.sourceFilter = s; state.inboxFilter = 'all'; render(); }
+function setShowDeleted(v) { state.showDeleted = !!v; state.inboxFilter = 'all'; render(); }
 
 async function saveResponse(id) {
   if (!state.currentUser) { promptForIdentity(); return; }
