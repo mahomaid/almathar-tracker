@@ -276,6 +276,17 @@ async function apiRecover(id) {
   if (!data.ok) throw new Error(data.error || 'recover failed');
 }
 
+async function apiEditGap(id, changes) {
+  if (!isConfigured()) return;
+  const res = await fetch(window.API_URL, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'editGap', id, changes, user: userLabel(state.currentUser) || 'web', userObj: state.currentUser })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'edit failed');
+  return data.gap;
+}
+
 async function apiSetLeader(domain, name, staffId) {
   if (!isConfigured()) return;
   const res = await fetch(window.API_URL, {
@@ -534,7 +545,7 @@ function renderCapture() {
     </div>
 
     <div style="display:flex; justify-content:space-between; align-items:center; margin: 1.25rem 0 8px;">
-      <div style="font-size:14px; font-weight:500;">Recent items (${state.gaps.length})</div>
+      <div style="font-size:14px; font-weight:500;">Recent items (${state.gaps.filter(g => g.status !== 'DEL').length})</div>
       <button onclick="refresh()" class="ghost-btn"><i class="ti ti-refresh"></i> Reload</button>
     </div>
     <div id="capture-list"></div>
@@ -739,6 +750,163 @@ async function recoverGap(id) {
   } catch (err) {
     console.error(err);
     toast(err.message || 'Recover failed', true);
+  }
+}
+
+// ----- v13: Edit modal -----
+// Holds the gap currently being edited and the new photo (if user picked one).
+let _editState = { gapId: null, pendingPhoto: null };
+
+function openEditModal(id) {
+  const gap = state.gaps.find(g => g.id === id);
+  if (!gap) { toast('Gap not found', true); return; }
+  if (!canCurrentUserDelete(gap)) { toast('Not authorized to edit this item', true); return; }
+
+  _editState.gapId = id;
+  _editState.pendingPhoto = null;
+
+  const overlay = document.getElementById('edit-overlay');
+  if (!overlay) { console.error('edit-overlay not found in HTML'); return; }
+
+  // Build the modal contents
+  document.getElementById('edit-modal-body').innerHTML = `
+    <h2 style="margin:0 0 4px; font-size:18px;">Edit gap</h2>
+    <p style="margin:0 0 14px; font-size:12px; color:var(--text-2);">
+      Logged ${gap.createdAt ? fmtDateTime(gap.createdAt) : ''} by ${escapeHtml(gap.loggedBy || '—')}.
+      Every change is recorded in the audit log.
+    </p>
+
+    <label>Description</label>
+    <textarea id="edit-text" rows="3">${escapeHtml(gap.text || '')}</textarea>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px;">
+      <div>
+        <label>Priority</label>
+        <select id="edit-priority">
+          <option value="CR" ${gap.priority === 'CR' ? 'selected' : ''}>Critical</option>
+          <option value="HI" ${gap.priority === 'HI' ? 'selected' : ''}>High</option>
+          <option value="ME" ${gap.priority === 'ME' ? 'selected' : ''}>Medium</option>
+          <option value="LO" ${gap.priority === 'LO' ? 'selected' : ''}>Low</option>
+        </select>
+      </div>
+      <div>
+        <label>Day-1 stopper</label>
+        <select id="edit-stopper">
+          <option value="" ${gap.isStopper !== 'YES' ? 'selected' : ''}>No</option>
+          <option value="YES" ${gap.isStopper === 'YES' ? 'selected' : ''}>Yes — blocks Day 0</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <label>Workstream <span style="color:var(--warn); font-weight:500;">— changing this reassigns accountability</span></label>
+      <select id="edit-domain">
+        ${DOMAINS.map(d => `<option value="${d.id}" ${gap.domain === d.id ? 'selected' : ''}>${d.label}</option>`).join('')}
+      </select>
+    </div>
+
+    <div style="margin-top:14px;">
+      <label>Photo</label>
+      ${gap.photoUrl ? `
+        <div style="margin-bottom:8px;">
+          <a href="${escapeHtml(gap.photoUrl)}" target="_blank" style="color:var(--info);">
+            <i class="ti ti-photo"></i> View current photo
+          </a>
+        </div>
+      ` : `
+        <div style="margin-bottom:8px; font-size:12px; color:var(--text-2);">No photo attached yet.</div>
+      `}
+      <label class="photo-btn" for="edit-photo-input">
+        <i class="ti ti-camera"></i> ${gap.photoUrl ? 'Replace photo' : 'Add photo'}
+      </label>
+      <input id="edit-photo-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="onEditPhotoSelected(event)">
+      <div id="edit-photo-preview"></div>
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
+      <button onclick="closeEditModal()">Cancel</button>
+      <button class="primary" onclick="saveEdit()"><i class="ti ti-check"></i> Save changes</button>
+    </div>
+  `;
+
+  overlay.style.display = 'flex';
+}
+
+function closeEditModal() {
+  const overlay = document.getElementById('edit-overlay');
+  if (overlay) overlay.style.display = 'none';
+  _editState.gapId = null;
+  _editState.pendingPhoto = null;
+}
+
+async function onEditPhotoSelected(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const preview = document.getElementById('edit-photo-preview');
+  preview.innerHTML = '<div style="font-size:12px; color:var(--text-2); margin-top:8px;"><i class="ti ti-loader"></i> Uploading photo…</div>';
+  try {
+    const result = await apiUploadPhoto(file);
+    _editState.pendingPhoto = { url: result.url, id: result.id };
+    preview.innerHTML = `
+      <div class="photo-preview" style="margin-top:8px;">
+        <img src="${escapeHtml(result.url)}" alt="New photo">
+        <span style="font-size:12px;">New photo ready to save</span>
+      </div>
+    `;
+  } catch (err) {
+    console.error(err);
+    preview.innerHTML = `<div style="color:var(--danger); font-size:12px; margin-top:8px;">Photo upload failed: ${escapeHtml(err.message || 'unknown error')}</div>`;
+  }
+}
+
+async function saveEdit() {
+  const id = _editState.gapId;
+  if (!id) return;
+  const gap = state.gaps.find(g => g.id === id);
+  if (!gap) { toast('Gap not found', true); return; }
+
+  const newText = document.getElementById('edit-text').value.trim();
+  if (!newText) { toast('Description cannot be empty', true); return; }
+  const newPriority = document.getElementById('edit-priority').value;
+  const newStopper = document.getElementById('edit-stopper').value;
+  const newDomain = document.getElementById('edit-domain').value;
+
+  // Warn if workstream is changing — that reassigns accountability
+  if (newDomain !== gap.domain) {
+    const oldD = domainOf(gap.domain).label;
+    const newD = domainOf(newDomain).label;
+    if (!confirm(`Move this gap from "${oldD}" to "${newD}"?\n\nThis reassigns accountability to a different workstream lead.`)) return;
+  }
+
+  const changes = {};
+  if (newText !== (gap.text || '')) changes.text = newText;
+  if (newPriority !== gap.priority) changes.priority = newPriority;
+  if (newStopper !== (gap.isStopper || '')) changes.isStopper = newStopper;
+  if (newDomain !== gap.domain) changes.domain = newDomain;
+  if (_editState.pendingPhoto) {
+    changes.photoUrl = _editState.pendingPhoto.url;
+    changes.photoId = _editState.pendingPhoto.id;
+  }
+
+  if (Object.keys(changes).length === 0) {
+    toast('No changes to save');
+    closeEditModal();
+    return;
+  }
+
+  try {
+    const updated = await apiEditGap(id, changes);
+    // Patch local state with the updated gap returned from server
+    if (updated) {
+      const idx = state.gaps.findIndex(g => g.id === id);
+      if (idx !== -1) state.gaps[idx] = updated;
+    }
+    toast('Saved');
+    closeEditModal();
+    render();
+  } catch (err) {
+    console.error(err);
+    toast(err.message || 'Save failed', true);
   }
 }
 
@@ -972,6 +1140,7 @@ function renderInbox() {
             <button onclick="emailOwner('${g.id}')" ${!canEmail ? 'disabled' : ''} title="${canEmail ? 'Email the owner' : (g.assignedTo ? 'Owner has no email in the People tab' : 'No owner set yet')}">
               <i class="ti ti-mail"></i> Email owner
             </button>
+            ${canCurrentUserDelete(g) ? `<button onclick="openEditModal('${g.id}')" title="Edit description, priority, photo"><i class="ti ti-edit"></i> Edit</button>` : ''}
             ${canCurrentUserDelete(g) ? `<button onclick="deleteGap('${g.id}')" title="Soft-delete (recoverable)"><i class="ti ti-trash"></i> Delete</button>` : ''}
             <button class="primary" onclick="saveResponse('${g.id}')"><i class="ti ti-check"></i> Save</button>
           `}
@@ -1205,8 +1374,9 @@ function renderDashboard() {
   const stoppers = stopperItems.length;
   const pctClosed = total ? Math.round(fixed / total * 100) : 0;
 
-  const simCount = state.gaps.filter(g => (g.source || 'sim') === 'sim').length;
-  const snagCount = state.gaps.filter(g => g.source === 'snag').length;
+  const simCount = state.gaps.filter(g => (g.source || 'sim') === 'sim' && g.status !== 'DEL').length;
+  const snagCount = state.gaps.filter(g => g.source === 'snag' && g.status !== 'DEL').length;
+  const liveTotal = state.gaps.filter(g => g.status !== 'DEL').length;
 
   // Per-workstream scorecards, sorted: most stoppers first, then most open
   const scorecards = DOMAINS
@@ -1242,7 +1412,7 @@ function renderDashboard() {
 
   el.innerHTML = `
     <div class="source-filter-row">
-      <button class="${state.sourceFilter === 'all' ? 'active' : ''}" onclick="setSourceFilter('all')">All (${state.gaps.length})</button>
+      <button class="${state.sourceFilter === 'all' ? 'active' : ''}" onclick="setSourceFilter('all')">All (${liveTotal})</button>
       <button class="${state.sourceFilter === 'sim' ? 'active' : ''}" onclick="setSourceFilter('sim')"><i class="ti ti-flask"></i> Simulation (${simCount})</button>
       <button class="${state.sourceFilter === 'snag' ? 'active' : ''}" onclick="setSourceFilter('snag')"><i class="ti ti-clipboard-list"></i> Snag list (${snagCount})</button>
     </div>
