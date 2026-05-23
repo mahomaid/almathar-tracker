@@ -556,6 +556,45 @@ tr.row-stopper:hover { background: var(--danger-bg); filter: brightness(1.1); }
   .stopper-cards { grid-template-columns: 1fr; }
 }
 
+/* v13: defensive fix for stopper row layout */
+.stopper-row, .stopper-row * { box-sizing: border-box; }
+.stopper-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  flex-wrap: wrap !important;
+}
+.stopper-toggle {
+  display: inline-flex !important;
+  align-items: center !important;
+  cursor: pointer !important;
+  margin: 0 !important;
+}
+.stopper-toggle input[type="checkbox"] {
+  display: none !important;
+}
+.stopper-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 8px 14px !important;
+  border-radius: 999px !important;
+  border: 1.5px solid var(--border-2) !important;
+  font-size: 13px !important;
+  background: var(--bg-2) !important;
+  color: var(--text-2) !important;
+  white-space: nowrap !important;
+}
+.stopper-toggle input:checked + .stopper-pill {
+  background: var(--danger-bg) !important;
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+.stopper-hint {
+  font-size: 11px !important;
+  color: var(--text-2) !important;
+}
+
 @media print {
   .tabs, .header button, button, #identity-overlay, #access-overlay, #edit-overlay, .filter-row, .source-toggle, .source-filter-row { display: none !important; }
   body { background: white; }
