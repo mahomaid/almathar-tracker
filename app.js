@@ -1658,9 +1658,9 @@ function renderDashboard() {
             <div><div class="sc-lbl">Total</div><div class="sc-num">${s.total}</div></div>
             <div><div class="sc-lbl">Open</div><div class="sc-num" style="color:var(--warn);">${s.open}</div></div>
             <div><div class="sc-lbl">Fixed</div><div class="sc-num" style="color:var(--success);">${s.fixed}</div></div>
-            <div><div class="sc-lbl">Ready</div><div class="sc-num ${readinessClass}">${readiness}%</div></div>
+            <div><div class="sc-lbl">% fixed</div><div class="sc-num">${s.closurePct}%</div></div>
           </div>
-          <div class="readiness-bar" style="margin: 6px 0 10px;">
+          <div class="readiness-bar" style="margin: 6px 0 10px;" title="Readiness: ${readiness}% — Fixed:${s.fixed} · Stoppers open:${stopperOpen} · Open:${nonStopperOpen} · Deferred:${s.deferred}">
             ${segs.map(seg => seg.value > 0
               ? `<div class="readiness-seg ${seg.cls}" style="flex: ${seg.value};" title="${seg.label}: ${seg.value}"></div>`
               : ''
