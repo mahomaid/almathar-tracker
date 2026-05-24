@@ -1093,6 +1093,7 @@ function renderInbox() {
   if (filter === 'mine') items = items.filter(g => g.assignedTo && g.assignedTo === myLabel);
   else if (filter === 'unassigned') items = items.filter(g => !g.assignedTo);
   else if (filter === 'stoppers') items = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX');
+  else if (filter === 'stoppers-no-date') items = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX' && !g.due);
   else if (filter !== 'all') items = items.filter(g => g.domain === filter);
 
   if (items.length === 0) {
@@ -1384,6 +1385,136 @@ function workstreamScorecard(d, filtered) {
   };
 }
 
+// v14: Day-1 stopper Gantt — visualizes stopper target dates against a timeline ending at Day 0.
+// Day 0 is configurable via small input in the UI; persisted to localStorage.
+function getDay0() {
+  try {
+    const saved = localStorage.getItem('almathar_day0');
+    if (saved) return saved;
+  } catch (e) {}
+  // default: 30 days from today
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  return d.toISOString().slice(0, 10);
+}
+function setDay0(value) {
+  try { localStorage.setItem('almathar_day0', value); } catch (e) {}
+  render();
+}
+
+function renderStopperGantt(filtered) {
+  const day0 = getDay0();
+  const today = state.currentDate;
+  const stoppers = filtered.filter(g => g.isStopper === 'YES' && g.status !== 'FX' && g.status !== 'DEL');
+  if (stoppers.length === 0) return '';
+
+  // Split into dated and undated
+  const withDate = stoppers.filter(g => g.due);
+  const withoutDate = stoppers.filter(g => !g.due);
+
+  // Sort dated by date ascending
+  withDate.sort((a, b) => a.due.localeCompare(b.due));
+
+  // Timeline span: from today to day0 (or from earliest stopper due if it's before today)
+  const todayMs = new Date(today).getTime();
+  const day0Ms = new Date(day0).getTime();
+  let minMs = todayMs;
+  let maxMs = day0Ms;
+  withDate.forEach(g => {
+    const ms = new Date(g.due).getTime();
+    if (ms < minMs) minMs = ms;
+    if (ms > maxMs) maxMs = ms;
+  });
+  // Add 10% padding on the right side after day0 if needed
+  if (maxMs < day0Ms) maxMs = day0Ms;
+  const spanMs = Math.max(maxMs - minMs, 86400000); // at least 1 day
+
+  // Build column-week markers
+  const weekMarkers = [];
+  const oneWeek = 7 * 86400000;
+  let cursor = minMs;
+  while (cursor <= maxMs) {
+    const pct = ((cursor - minMs) / spanMs) * 100;
+    const date = new Date(cursor);
+    weekMarkers.push({ pct, label: `${date.getDate()}/${date.getMonth() + 1}` });
+    cursor += oneWeek;
+  }
+
+  // Position of today marker
+  const todayPct = ((todayMs - minMs) / spanMs) * 100;
+  // Position of Day 0
+  const day0Pct = ((day0Ms - minMs) / spanMs) * 100;
+
+  return `
+    <div class="chart-card" style="margin-bottom:1rem;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+        <h4 style="margin:0;">Day-1 stopper timeline</h4>
+        <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-2);">
+          <span>Day 0:</span>
+          <input type="date" value="${day0}" onchange="setDay0(this.value)" style="font-size:12px; padding:4px 8px; width:auto;">
+        </div>
+      </div>
+
+      ${withoutDate.length > 0 ? `
+        <div class="gantt-warning" onclick="jumpToStoppersMissingDates()">
+          <i class="ti ti-alert-circle"></i>
+          <span><strong>${withoutDate.length}</strong> stopper${withoutDate.length === 1 ? '' : 's'} without target dates — click to set them.</span>
+          <i class="ti ti-chevron-right" style="margin-left:auto;"></i>
+        </div>
+      ` : ''}
+
+      <div class="gantt-wrap">
+        <div class="gantt-timeline-head">
+          ${weekMarkers.map(w => `<div class="gantt-tick" style="left: ${w.pct}%;">${w.label}</div>`).join('')}
+        </div>
+        <div class="gantt-rows">
+          ${withDate.map(g => {
+            const ms = new Date(g.due).getTime();
+            const pct = ((ms - minMs) / spanMs) * 100;
+            const overdue = ms < todayMs;
+            const beyond = ms > day0Ms;
+            let cls = 'gantt-bar-ok';
+            if (overdue) cls = 'gantt-bar-overdue';
+            else if (beyond) cls = 'gantt-bar-late';
+            const d = DOMAINS.find(x => x.id === g.domain) || { short: g.domain, icon: 'ti-help', ramp: 'gray' };
+            return `
+              <div class="gantt-row" onclick="openEditModal('${g.id}')" title="${escapeHtml(g.text)}\nDue: ${g.due}">
+                <div class="gantt-row-label">
+                  <span class="pill c-${d.ramp}" style="font-size:10px; padding:2px 6px;"><i class="ti ${d.icon}"></i>${d.short}</span>
+                  <span class="gantt-row-text">${escapeHtml(g.text.length > 60 ? g.text.slice(0, 57) + '…' : g.text)}</span>
+                </div>
+                <div class="gantt-row-track">
+                  <div class="gantt-today-line" style="left: ${todayPct}%;" title="Today"></div>
+                  <div class="gantt-day0-line" style="left: ${day0Pct}%;" title="Day 0"></div>
+                  <div class="gantt-bar ${cls}" style="left: ${pct}%;">
+                    <span class="gantt-bar-date">${g.due.slice(5)}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div class="gantt-legend">
+          <span><i class="ti ti-square-filled" style="color:var(--success);"></i> On track</span>
+          <span><i class="ti ti-square-filled" style="color:var(--danger);"></i> Overdue</span>
+          <span><i class="ti ti-square-filled" style="color:var(--warn);"></i> After Day 0</span>
+          <span style="margin-left:auto;">Click any bar to edit the stopper</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function jumpToStoppersMissingDates() {
+  setTab('inbox');
+  setTimeout(() => {
+    state.sourceFilter = 'all';
+    state.showDeleted = false;
+    state.inboxFilter = 'stoppers-no-date';
+    render();
+  }, 50);
+}
+
 function renderDashboard() {
   destroyCharts();
   const el = document.getElementById('view-dashboard');
@@ -1498,53 +1629,26 @@ function renderDashboard() {
       </div>
     ` : ''}
 
-    <div style="font-size:14px; font-weight:500; margin: 1.5rem 0 8px;">Workstream readiness</div>
-    <div style="font-size:12px; color:var(--text-2); margin-bottom: 12px;">Each bar shows the mix of statuses for that workstream. Sorted worst-first (most stoppers, then most open).</div>
-    <div class="readiness-grid">
+    ${stoppers > 0 ? renderStopperGantt(filtered) : ''}
+
+    <div style="font-size:14px; font-weight:500; margin: 1.5rem 0 8px;">Workstream scorecards</div>
+    <div class="scorecard-grid">
       ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => {
-        // Compute segment widths as % of this workstream's non-deleted total
-        const denom = s.total || 1;
+        // v14: embedded readiness bar inside scorecard
         const stopperOpen = filtered.filter(g => g.domain === s.id && g.status === 'NF' && g.isStopper === 'YES').length;
         const nonStopperOpen = s.open - stopperOpen;
         const segs = [
-          { key: 'fixed',    value: s.fixed,        cls: 'seg-fixed',    label: 'Fixed' },
-          { key: 'stopper',  value: stopperOpen,    cls: 'seg-stopper',  label: 'Stopper' },
-          { key: 'open',     value: nonStopperOpen, cls: 'seg-open',     label: 'Open' },
-          { key: 'deferred', value: s.deferred,     cls: 'seg-deferred', label: 'Deferred' }
+          { value: s.fixed,        cls: 'seg-fixed',    label: 'Fixed' },
+          { value: stopperOpen,    cls: 'seg-stopper',  label: 'Stoppers open' },
+          { value: nonStopperOpen, cls: 'seg-open',     label: 'Open' },
+          { value: s.deferred,     cls: 'seg-deferred', label: 'Deferred' }
         ];
-        // Readiness % = fixed / (fixed + open) — deferred excluded as not in-scope-now
         const liveTotal = s.fixed + s.open;
         const readiness = liveTotal > 0 ? Math.round(s.fixed / liveTotal * 100) : 0;
         let readinessClass = 'readiness-red';
         if (readiness >= 80) readinessClass = 'readiness-green';
         else if (readiness >= 50) readinessClass = 'readiness-amber';
         return `
-          <div class="readiness-row" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
-            <div class="readiness-head">
-              <div class="readiness-label">
-                <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.short || s.label}</span>
-                ${s.leader ? `<span class="readiness-lead">${escapeHtml(s.leader.name)}</span>` : '<span class="readiness-lead missing">no lead</span>'}
-              </div>
-              <div class="readiness-pct ${readinessClass}">
-                ${readiness}% <span style="font-size:10px; color:var(--text-2); font-weight:400;">ready</span>
-              </div>
-            </div>
-            <div class="readiness-bar">
-              ${segs.map(seg => seg.value > 0
-                ? `<div class="readiness-seg ${seg.cls}" style="flex: ${seg.value};" title="${seg.label}: ${seg.value}">
-                     ${(seg.value / denom) >= 0.10 ? `<span>${seg.value}</span>` : ''}
-                   </div>`
-                : ''
-              ).join('')}
-            </div>
-          </div>
-        `;
-      }).join('')}
-    </div>
-
-    <div style="font-size:14px; font-weight:500; margin: 1.5rem 0 8px;">Workstream scorecards</div>
-    <div class="scorecard-grid">
-      ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => `
         <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
           <div class="scorecard-head">
             <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.label}</span>
@@ -1554,7 +1658,13 @@ function renderDashboard() {
             <div><div class="sc-lbl">Total</div><div class="sc-num">${s.total}</div></div>
             <div><div class="sc-lbl">Open</div><div class="sc-num" style="color:var(--warn);">${s.open}</div></div>
             <div><div class="sc-lbl">Fixed</div><div class="sc-num" style="color:var(--success);">${s.fixed}</div></div>
-            <div><div class="sc-lbl">% fixed</div><div class="sc-num">${s.closurePct}%</div></div>
+            <div><div class="sc-lbl">Ready</div><div class="sc-num ${readinessClass}">${readiness}%</div></div>
+          </div>
+          <div class="readiness-bar" style="margin: 6px 0 10px;">
+            ${segs.map(seg => seg.value > 0
+              ? `<div class="readiness-seg ${seg.cls}" style="flex: ${seg.value};" title="${seg.label}: ${seg.value}"></div>`
+              : ''
+            ).join('')}
           </div>
           <div class="scorecard-meta">
             ${s.leader ? `<span><i class="ti ti-id-badge-2"></i> ${escapeHtml(s.leader.name)}</span>` : '<span class="missing"><i class="ti ti-alert-triangle"></i> no lead</span>'}
@@ -1562,7 +1672,8 @@ function renderDashboard() {
             ${s.avgDays !== null ? `<span><i class="ti ti-clock"></i> avg ${s.avgDays}d to fix</span>` : ''}
           </div>
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
 
     <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Open action items (stoppers first, then RAG)</div>
