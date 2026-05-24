@@ -187,10 +187,23 @@ function clearIdentity() {
 
 function promptForIdentity() {
   document.getElementById('identity-overlay').style.display = 'flex';
-  document.getElementById('identity-name').value = '';
-  document.getElementById('identity-staffid').value = '';
+  // v13.4: prefill from any previously stored identity so user can confirm rather than retype
+  let prevName = '', prevId = '';
+  try {
+    const saved = localStorage.getItem('almathar_user_v3');
+    if (saved) {
+      const obj = JSON.parse(saved);
+      prevName = obj.name || '';
+      prevId = obj.staffId || '';
+    }
+  } catch (e) {}
+  document.getElementById('identity-name').value = prevName;
+  document.getElementById('identity-staffid').value = prevId;
   document.getElementById('identity-error').style.display = 'none';
-  setTimeout(() => document.getElementById('identity-name').focus(), 50);
+  setTimeout(() => {
+    if (prevName) document.getElementById('identity-staffid').focus();
+    else document.getElementById('identity-name').focus();
+  }, 50);
 }
 
 async function submitIdentity() {
