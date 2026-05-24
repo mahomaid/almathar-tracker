@@ -589,6 +589,141 @@ button:disabled:hover {
 .seg-stopper  { background: var(--chart-danger-bg);   color: var(--chart-danger); }
 .seg-deferred { background: var(--chart-deferred-bg); color: var(--chart-deferred); }
 
+/* v14: Day-1 stopper Gantt */
+.gantt-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: filter 0.15s;
+}
+.gantt-warning:hover { filter: brightness(1.05); }
+.gantt-warning i { font-size: 18px; }
+
+.gantt-wrap {
+  position: relative;
+  font-size: 12px;
+}
+.gantt-timeline-head {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid var(--border);
+  margin-left: 280px;
+  margin-bottom: 8px;
+}
+.gantt-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.gantt-tick::after {
+  content: '';
+  display: block;
+  width: 1px;
+  height: 4px;
+  background: var(--border);
+  margin: 2px auto 0;
+}
+.gantt-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gantt-row {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 0;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.gantt-row:hover { background: var(--bg-2); }
+.gantt-row-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.gantt-row-text {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gantt-row-track {
+  position: relative;
+  height: 24px;
+  background: var(--bg-2);
+  border-radius: 3px;
+}
+.gantt-today-line {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 1.5px;
+  background: var(--info);
+  opacity: 0.7;
+  z-index: 1;
+}
+.gantt-day0-line {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--danger);
+  z-index: 1;
+}
+.gantt-bar {
+  position: absolute;
+  top: 3px;
+  height: 18px;
+  width: 80px;
+  transform: translateX(-50%);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 500;
+  z-index: 2;
+  overflow: hidden;
+}
+.gantt-bar-ok       { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+.gantt-bar-overdue  { background: var(--danger-bg);  color: var(--danger);  border: 1px solid var(--danger); }
+.gantt-bar-late     { background: var(--warn-bg);    color: var(--warn);    border: 1px solid var(--warn); }
+.gantt-bar-date { white-space: nowrap; }
+.gantt-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.gantt-legend i { font-size: 12px; margin-right: 2px; }
+
+@media (max-width: 700px) {
+  .gantt-timeline-head { margin-left: 0; display: none; }
+  .gantt-row { grid-template-columns: 1fr; gap: 4px; }
+  .gantt-row-track { height: 28px; }
+}
+
 .scorecard-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -625,6 +760,9 @@ button:disabled:hover {
 }
 .sc-lbl { font-size: 10px; color: var(--text-2); }
 .sc-num { font-size: 18px; font-weight: 500; margin-top: 2px; }
+.sc-num.readiness-red    { color: var(--danger); }
+.sc-num.readiness-amber  { color: var(--warn); }
+.sc-num.readiness-green  { color: var(--success); }
 .scorecard-meta {
   font-size: 11px;
   color: var(--text-2);
