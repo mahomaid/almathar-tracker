@@ -126,7 +126,7 @@ body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background-image: url('watermark-dark.png');
+  background-image: url('Almather_Logo_White.png');
   background-repeat: no-repeat;
   background-position: center center;
   background-size: min(70vw, 900px) auto;
@@ -135,7 +135,7 @@ body::before {
   z-index: 0;
 }
 :root[data-theme="light"] body::before {
-  background-image: url('watermark-light.png');
+  background-image: url('Almather_Logo_Black.png');
   opacity: 0.05;
 }
 
