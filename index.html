@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Almathar Hospital — Simulation Readiness Tracker</title>
+  <link rel="icon" type="image/png" href="logo.png">
+  <link rel="apple-touch-icon" href="logo.png">
   <script>
     // Apply saved theme BEFORE CSS paints to avoid a flash.
     (function () {
@@ -20,9 +22,12 @@
 <body>
   <div class="container">
     <header class="header">
-      <div>
-        <h1>Almathar Hospital — Simulation Readiness Tracker</h1>
-        <div class="sub">Phase 1 commissioning · weekly executive review</div>
+      <div class="header-brand">
+        <img src="logo.png" alt="Almathar Hospital by KFSH" class="brand-logo">
+        <div class="brand-text">
+          <h1>Simulation Readiness Tracker</h1>
+          <div class="sub">Phase 1 commissioning · weekly executive review</div>
+        </div>
       </div>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme" aria-label="Toggle theme">
@@ -53,32 +58,39 @@
     <div class="identity-modal">
       <h2 style="margin:0 0 8px; font-size:18px;">Almathar Hospital — Simulation Readiness Tracker</h2>
       <p style="margin:0 0 14px; font-size:13px; color:var(--text-2);">Please enter the access password to continue.</p>
-      <input id="access-input" type="password" placeholder="Password" autocomplete="off">
-      <div id="access-error" style="display:none; color:var(--danger); font-size:12px; margin-top:8px;">Incorrect password. Please try again.</div>
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
-        <button class="primary" onclick="submitAccessPassword()"><i class="ti ti-check"></i> Continue</button>
-      </div>
+      <form id="access-form" onsubmit="event.preventDefault(); submitAccessPassword();" autocomplete="on">
+        <!-- Hidden username field is required for iOS Keychain / Android Password Manager
+             to recognize this as a credential pair. Without it, the password is not offered for saving. -->
+        <input type="text" name="username" value="almathar-tracker" autocomplete="username" style="display:none;" readonly>
+        <input id="access-input" name="password" type="password" placeholder="Password" autocomplete="current-password">
+        <div id="access-error" style="display:none; color:var(--danger); font-size:12px; margin-top:8px;">Incorrect password. Please try again.</div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+          <button class="primary" type="submit"><i class="ti ti-check"></i> Continue</button>
+        </div>
+      </form>
     </div>
   </div>
 
   <div id="identity-overlay" style="display:none;">
     <div class="identity-modal">
       <h2 style="margin:0 0 8px; font-size:18px;">Welcome — please introduce yourself</h2>
-      <p style="margin:0 0 14px; font-size:13px; color:var(--text-2);">Your name and staff ID will be recorded against every gap you log and every change you make.</p>
-      <div style="display:grid; grid-template-columns:2fr 1fr; gap:10px;">
-        <div>
-          <label>Full name</label>
-          <input id="identity-name" type="text" placeholder="e.g. Dr. Moath Homiad">
+      <p style="margin:0 0 14px; font-size:13px; color:var(--text-2);">Your name and staff ID will be recorded against every gap you log and every change you make. Stored locally on this device.</p>
+      <form id="identity-form" onsubmit="event.preventDefault(); submitIdentity();" autocomplete="on">
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:10px;">
+          <div>
+            <label>Full name</label>
+            <input id="identity-name" name="name" type="text" autocomplete="name" autocapitalize="words" placeholder="e.g. Dr. Moath Homiad">
+          </div>
+          <div>
+            <label>Staff ID</label>
+            <input id="identity-staffid" name="employeeId" type="text" inputmode="numeric" pattern="\d*" autocomplete="off" placeholder="12345">
+          </div>
         </div>
-        <div>
-          <label>Staff ID</label>
-          <input id="identity-staffid" type="text" inputmode="numeric" pattern="\d*" placeholder="12345">
+        <div id="identity-error" style="display:none; color:var(--danger); font-size:12px; margin-top:8px;"></div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+          <button class="primary" type="submit"><i class="ti ti-check"></i> Continue</button>
         </div>
-      </div>
-      <div id="identity-error" style="display:none; color:var(--danger); font-size:12px; margin-top:8px;"></div>
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
-        <button class="primary" onclick="submitIdentity()"><i class="ti ti-check"></i> Continue</button>
-      </div>
+      </form>
     </div>
   </div>
 
