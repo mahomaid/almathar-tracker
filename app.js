@@ -1498,7 +1498,51 @@ function renderDashboard() {
       </div>
     ` : ''}
 
-    <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Workstream scorecards</div>
+    <div style="font-size:14px; font-weight:500; margin: 1.5rem 0 8px;">Workstream readiness</div>
+    <div style="font-size:12px; color:var(--text-2); margin-bottom: 12px;">Each bar shows the mix of statuses for that workstream. Sorted worst-first (most stoppers, then most open).</div>
+    <div class="readiness-grid">
+      ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => {
+        // Compute segment widths as % of this workstream's non-deleted total
+        const denom = s.total || 1;
+        const stopperOpen = filtered.filter(g => g.domain === s.id && g.status === 'NF' && g.isStopper === 'YES').length;
+        const nonStopperOpen = s.open - stopperOpen;
+        const segs = [
+          { key: 'fixed',    value: s.fixed,        cls: 'seg-fixed',    label: 'Fixed' },
+          { key: 'stopper',  value: stopperOpen,    cls: 'seg-stopper',  label: 'Stopper' },
+          { key: 'open',     value: nonStopperOpen, cls: 'seg-open',     label: 'Open' },
+          { key: 'deferred', value: s.deferred,     cls: 'seg-deferred', label: 'Deferred' }
+        ];
+        // Readiness % = fixed / (fixed + open) — deferred excluded as not in-scope-now
+        const liveTotal = s.fixed + s.open;
+        const readiness = liveTotal > 0 ? Math.round(s.fixed / liveTotal * 100) : 0;
+        let readinessClass = 'readiness-red';
+        if (readiness >= 80) readinessClass = 'readiness-green';
+        else if (readiness >= 50) readinessClass = 'readiness-amber';
+        return `
+          <div class="readiness-row" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
+            <div class="readiness-head">
+              <div class="readiness-label">
+                <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.short || s.label}</span>
+                ${s.leader ? `<span class="readiness-lead">${escapeHtml(s.leader.name)}</span>` : '<span class="readiness-lead missing">no lead</span>'}
+              </div>
+              <div class="readiness-pct ${readinessClass}">
+                ${readiness}% <span style="font-size:10px; color:var(--text-2); font-weight:400;">ready</span>
+              </div>
+            </div>
+            <div class="readiness-bar">
+              ${segs.map(seg => seg.value > 0
+                ? `<div class="readiness-seg ${seg.cls}" style="flex: ${seg.value};" title="${seg.label}: ${seg.value}">
+                     ${(seg.value / denom) >= 0.10 ? `<span>${seg.value}</span>` : ''}
+                   </div>`
+                : ''
+              ).join('')}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+
+    <div style="font-size:14px; font-weight:500; margin: 1.5rem 0 8px;">Workstream scorecards</div>
     <div class="scorecard-grid">
       ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => `
         <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
