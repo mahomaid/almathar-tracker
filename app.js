@@ -582,7 +582,7 @@ function renderPhotoArea() {
   }
   return `
     <label class="photo-btn">
-      <input type="file" accept="image/*" capture="environment" onchange="onPhotoSelected(event)" style="display:none;">
+      <input type="file" accept="image/*" onchange="onPhotoSelected(event)" style="display:none;">
       <i class="ti ti-camera"></i> Take or choose photo
     </label>
   `;
@@ -819,7 +819,7 @@ function openEditModal(id) {
       <label class="photo-btn" for="edit-photo-input">
         <i class="ti ti-camera"></i> ${gap.photoUrl ? 'Replace photo' : 'Add photo'}
       </label>
-      <input id="edit-photo-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="onEditPhotoSelected(event)">
+      <input id="edit-photo-input" type="file" accept="image/*" style="display:none;" onchange="onEditPhotoSelected(event)">
       <div id="edit-photo-preview"></div>
     </div>
 
