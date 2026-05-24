@@ -520,6 +520,75 @@ button:disabled:hover {
 .chart-card-wide canvas { max-height: 280px; }
 
 /* Workstream scorecard grid */
+/* v14: Workstream Readiness panel */
+.readiness-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 1rem;
+}
+.readiness-row {
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.readiness-row:hover {
+  border-color: var(--border-2);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.10);
+}
+.readiness-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.readiness-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.readiness-lead {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.readiness-lead.missing { color: var(--warn); }
+.readiness-pct {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.readiness-red    { color: var(--danger); }
+.readiness-amber  { color: var(--warn); }
+.readiness-green  { color: var(--success); }
+.readiness-bar {
+  display: flex;
+  height: 22px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.readiness-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  min-width: 2px;
+  transition: filter 0.15s;
+}
+.readiness-row:hover .readiness-seg { filter: brightness(1.08); }
+.seg-fixed    { background: var(--chart-fixed-bg);    color: var(--chart-fixed); }
+.seg-open     { background: var(--chart-open-bg);     color: var(--chart-open); }
+.seg-stopper  { background: var(--chart-danger-bg);   color: var(--chart-danger); }
+.seg-deferred { background: var(--chart-deferred-bg); color: var(--chart-deferred); }
+
 .scorecard-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
