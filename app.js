@@ -57,8 +57,28 @@ const state = {
   quickDomain: null,
   quickPriority: 'ME',
   quickStopper: false,
-  pendingPhoto: null
+  pendingPhotos: []
 };
+
+// v15: parse photo fields that may be either legacy single-URL strings OR new JSON arrays
+function parsePhotos(val) {
+  if (!val) return [];
+  const s = String(val).trim();
+  if (!s) return [];
+  if (s.startsWith('[')) {
+    try {
+      const arr = JSON.parse(s);
+      return Array.isArray(arr) ? arr.filter(Boolean) : [];
+    } catch (e) { return []; }
+  }
+  // Legacy: single URL/ID string
+  return [s];
+}
+function serializePhotos(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return '';
+  if (arr.length === 1) return arr[0]; // stay legacy-compatible for single photos
+  return JSON.stringify(arr);
+}
 
 function userLabel(u) {
   if (!u) return '';
@@ -187,10 +207,23 @@ function clearIdentity() {
 
 function promptForIdentity() {
   document.getElementById('identity-overlay').style.display = 'flex';
-  document.getElementById('identity-name').value = '';
-  document.getElementById('identity-staffid').value = '';
+  // v13.4: prefill from any previously stored identity so user can confirm rather than retype
+  let prevName = '', prevId = '';
+  try {
+    const saved = localStorage.getItem('almathar_user_v3');
+    if (saved) {
+      const obj = JSON.parse(saved);
+      prevName = obj.name || '';
+      prevId = obj.staffId || '';
+    }
+  } catch (e) {}
+  document.getElementById('identity-name').value = prevName;
+  document.getElementById('identity-staffid').value = prevId;
   document.getElementById('identity-error').style.display = 'none';
-  setTimeout(() => document.getElementById('identity-name').focus(), 50);
+  setTimeout(() => {
+    if (prevName) document.getElementById('identity-staffid').focus();
+    else document.getElementById('identity-name').focus();
+  }, 50);
 }
 
 async function submitIdentity() {
@@ -572,40 +605,87 @@ function renderCapture() {
 function setCaptureSource(src) { state.captureSource = src; render(); }
 
 function renderPhotoArea() {
-  if (state.pendingPhoto) {
+  const photos = state.pendingPhotos || [];
+  const thumbs = photos.map((p, i) => {
+    // v15.1: use Drive's thumbnail endpoint which works reliably in <img> tags.
+    // Falls back to a generic photo icon if the image won't load.
+    const thumbUrl = p.id ? `https://drive.google.com/thumbnail?id=${p.id}&sz=w200` : p.url;
     return `
-      <div class="photo-preview">
-        <img src="${escapeHtml(state.pendingPhoto.url)}" alt="Preview" referrerpolicy="no-referrer">
-        <button class="ghost-btn" onclick="clearPendingPhoto()"><i class="ti ti-x"></i> Remove</button>
-      </div>
-    `;
-  }
+    <div class="photo-thumb">
+      <img src="${escapeHtml(thumbUrl)}" alt="Photo ${i + 1}" referrerpolicy="no-referrer"
+           onclick="openPhotoPreview('${escapeHtml(p.url)}')"
+           onerror="this.style.display='none'; this.parentElement.classList.add('photo-thumb-fallback');"
+           title="Click to preview full size">
+      <button class="photo-thumb-remove" onclick="removePendingPhoto(${i})" title="Remove" type="button">
+        <i class="ti ti-x"></i>
+      </button>
+    </div>
+  `;}).join('');
   return `
-    <label class="photo-btn">
-      <input type="file" accept="image/*" capture="environment" onchange="onPhotoSelected(event)" style="display:none;">
-      <i class="ti ti-camera"></i> Take or choose photo
-    </label>
+    <div class="photo-gallery">
+      ${thumbs}
+      <label class="photo-add-btn" title="Add another photo">
+        <input type="file" accept="image/*" multiple onchange="onPhotoSelected(event)" style="display:none;">
+        <i class="ti ti-camera-plus"></i>
+        <span>${photos.length === 0 ? 'Take or choose photo' : 'Add another'}</span>
+      </label>
+    </div>
+    ${photos.length > 0 ? `<div style="font-size:11px; color:var(--text-2); margin-top:6px;">${photos.length} photo${photos.length === 1 ? '' : 's'} ready · click any thumbnail to preview</div>` : ''}
   `;
 }
 
 async function onPhotoSelected(e) {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  toast('Uploading photo…');
+  const files = Array.from(e.target.files || []);
+  if (files.length === 0) return;
+  // Allow up to 6 photos per gap to keep payload sane
+  const cap = 6;
+  const remaining = cap - (state.pendingPhotos || []).length;
+  if (remaining <= 0) {
+    toast(`Up to ${cap} photos per item`, true);
+    e.target.value = '';
+    return;
+  }
+  const toUpload = files.slice(0, remaining);
+  toast(`Uploading ${toUpload.length} photo${toUpload.length === 1 ? '' : 's'}…`);
   try {
-    const photo = await apiUploadPhoto(file);
-    state.pendingPhoto = photo;
-    document.getElementById('photo-area').innerHTML = renderPhotoArea();
-    toast('Photo attached');
+    for (const file of toUpload) {
+      const photo = await apiUploadPhoto(file);
+      state.pendingPhotos.push(photo);
+      // Re-render incrementally so users see progress
+      document.getElementById('photo-area').innerHTML = renderPhotoArea();
+    }
+    toast(`${toUpload.length} photo${toUpload.length === 1 ? '' : 's'} attached`);
   } catch (err) {
     console.error(err);
     toast('Photo upload failed', true);
   }
+  e.target.value = '';
+}
+
+function removePendingPhoto(idx) {
+  state.pendingPhotos.splice(idx, 1);
+  document.getElementById('photo-area').innerHTML = renderPhotoArea();
 }
 
 function clearPendingPhoto() {
-  state.pendingPhoto = null;
+  state.pendingPhotos = [];
   document.getElementById('photo-area').innerHTML = renderPhotoArea();
+}
+
+// Open a full-size preview overlay so users can verify the photo before submitting
+function openPhotoPreview(url) {
+  const overlay = document.createElement('div');
+  overlay.className = 'photo-lightbox';
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `
+    <div class="photo-lightbox-inner" onclick="event.stopPropagation();">
+      <img src="${escapeHtml(url)}" alt="Photo preview" referrerpolicy="no-referrer">
+      <button class="photo-lightbox-close" onclick="this.closest('.photo-lightbox').remove()" title="Close">
+        <i class="ti ti-x"></i>
+      </button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
 }
 
 function pickDomain(id) {
@@ -662,8 +742,8 @@ async function addQuickGap() {
     owner: domainOf(state.quickDomain).label,
     assignedTo: defaultOwner, actionPlan: '', status: 'NF', due: '',
     isStopper: state.quickStopper ? 'YES' : '',
-    photoUrl: state.pendingPhoto ? state.pendingPhoto.url : '',
-    photoId: state.pendingPhoto ? state.pendingPhoto.id : '',
+    photoUrl: serializePhotos((state.pendingPhotos || []).map(p => p.url)),
+    photoId: serializePhotos((state.pendingPhotos || []).map(p => p.id)),
     loggedBy: userLabel(state.currentUser),
     source: state.captureSource
   };
@@ -678,7 +758,7 @@ async function addQuickGap() {
     document.getElementById('q-text').value = '';
     document.getElementById('q-stopper').checked = false;
     state.quickStopper = false;
-    state.pendingPhoto = null;
+    state.pendingPhotos = [];
     document.getElementById('photo-area').innerHTML = renderPhotoArea();
     renderCaptureList();
   } catch (err) {
@@ -705,7 +785,14 @@ function renderCaptureList() {
           <span class="pill c-${d.ramp}"><i class="ti ${d.icon}"></i>${d.short}</span>
           <span class="pill c-${p.color}">${p.label}</span>
           ${g.isStopper === 'YES' ? '<span class="pill c-red"><i class="ti ti-flag-3"></i> Stopper</span>' : ''}
-          ${g.photoUrl ? `<a href="${escapeHtml(g.photoUrl)}" target="_blank" class="pill c-gray" title="View photo"><i class="ti ti-photo"></i></a>` : ''}
+          ${(function(){
+            const urls = parsePhotos(g.photoUrl);
+            if (urls.length === 0) return '';
+            const count = urls.length;
+            return `<a href="${escapeHtml(urls[0])}" target="_blank" class="pill c-gray" title="${count} photo${count === 1 ? '' : 's'} — click to view">
+              <i class="ti ti-photo"></i>${count > 1 ? ' ×' + count : ''}
+            </a>`;
+          })()}
           <span class="gap-text">${escapeHtml(g.text)}</span>
           ${canCurrentUserDelete(g) ? `<button onclick="deleteGap('${g.id}')" aria-label="Delete" class="ghost-btn"><i class="ti ti-trash"></i></button>` : ''}
         </div>
@@ -754,8 +841,9 @@ async function recoverGap(id) {
 }
 
 // ----- v13: Edit modal -----
-// Holds the gap currently being edited and the new photo (if user picked one).
-let _editState = { gapId: null, pendingPhoto: null };
+// v15: holds the working photo set being edited (existing kept + newly added - removed).
+// Each entry is {url, id, isNew?: true}.
+let _editState = { gapId: null, editPhotos: [] };
 
 function openEditModal(id) {
   const gap = state.gaps.find(g => g.id === id);
@@ -763,7 +851,10 @@ function openEditModal(id) {
   if (!canCurrentUserDelete(gap)) { toast('Not authorized to edit this item', true); return; }
 
   _editState.gapId = id;
-  _editState.pendingPhoto = null;
+  // Initialize working photo set from existing gap.
+  const urls = parsePhotos(gap.photoUrl);
+  const ids = parsePhotos(gap.photoId);
+  _editState.editPhotos = urls.map((u, i) => ({ url: u, id: ids[i] || '', isNew: false }));
 
   const overlay = document.getElementById('edit-overlay');
   if (!overlay) { console.error('edit-overlay not found in HTML'); return; }
@@ -806,21 +897,9 @@ function openEditModal(id) {
     </div>
 
     <div style="margin-top:14px;">
-      <label>Photo</label>
-      ${gap.photoUrl ? `
-        <div style="margin-bottom:8px;">
-          <a href="${escapeHtml(gap.photoUrl)}" target="_blank" style="color:var(--info);">
-            <i class="ti ti-photo"></i> View current photo
-          </a>
-        </div>
-      ` : `
-        <div style="margin-bottom:8px; font-size:12px; color:var(--text-2);">No photo attached yet.</div>
-      `}
-      <label class="photo-btn" for="edit-photo-input">
-        <i class="ti ti-camera"></i> ${gap.photoUrl ? 'Replace photo' : 'Add photo'}
-      </label>
-      <input id="edit-photo-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="onEditPhotoSelected(event)">
-      <div id="edit-photo-preview"></div>
+      <label>Photos</label>
+      <div id="edit-photo-gallery">${renderEditPhotoGallery()}</div>
+      <input id="edit-photo-input" type="file" accept="image/*" multiple style="display:none;" onchange="onEditPhotoSelected(event)">
     </div>
 
     <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
@@ -832,31 +911,72 @@ function openEditModal(id) {
   overlay.style.display = 'flex';
 }
 
+function renderEditPhotoGallery() {
+  const photos = _editState.editPhotos || [];
+  const thumbs = photos.map((p, i) => {
+    const thumbUrl = p.id ? `https://drive.google.com/thumbnail?id=${p.id}&sz=w200` : p.url;
+    return `
+    <div class="photo-thumb ${p.isNew ? 'photo-thumb-new' : ''}">
+      <img src="${escapeHtml(thumbUrl)}" alt="Photo ${i + 1}" referrerpolicy="no-referrer"
+           onclick="openPhotoPreview('${escapeHtml(p.url)}')"
+           onerror="this.style.display='none'; this.parentElement.classList.add('photo-thumb-fallback');"
+           title="Click to preview full size">
+      <button class="photo-thumb-remove" onclick="removeEditPhoto(${i})" title="Remove" type="button">
+        <i class="ti ti-x"></i>
+      </button>
+      ${p.isNew ? '<div class="photo-thumb-badge">NEW</div>' : ''}
+    </div>
+  `;}).join('');
+  return `
+    <div class="photo-gallery">
+      ${thumbs}
+      <label class="photo-add-btn" title="Add another photo" for="edit-photo-input">
+        <i class="ti ti-camera-plus"></i>
+        <span>${photos.length === 0 ? 'Add photo' : 'Add another'}</span>
+      </label>
+    </div>
+    <div style="font-size:11px; color:var(--text-2); margin-top:6px;">
+      ${photos.length} photo${photos.length === 1 ? '' : 's'} · click any thumbnail to preview
+    </div>
+  `;
+}
+
+function removeEditPhoto(idx) {
+  _editState.editPhotos.splice(idx, 1);
+  document.getElementById('edit-photo-gallery').innerHTML = renderEditPhotoGallery();
+}
+
 function closeEditModal() {
   const overlay = document.getElementById('edit-overlay');
   if (overlay) overlay.style.display = 'none';
   _editState.gapId = null;
-  _editState.pendingPhoto = null;
+  _editState.editPhotos = [];
 }
 
 async function onEditPhotoSelected(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const preview = document.getElementById('edit-photo-preview');
-  preview.innerHTML = '<div style="font-size:12px; color:var(--text-2); margin-top:8px;"><i class="ti ti-loader"></i> Uploading photo…</div>';
+  const files = Array.from(event.target.files || []);
+  if (files.length === 0) return;
+  const cap = 6;
+  const remaining = cap - (_editState.editPhotos || []).length;
+  if (remaining <= 0) {
+    toast(`Up to ${cap} photos per item`, true);
+    event.target.value = '';
+    return;
+  }
+  const toUpload = files.slice(0, remaining);
+  toast(`Uploading ${toUpload.length} photo${toUpload.length === 1 ? '' : 's'}…`);
   try {
-    const result = await apiUploadPhoto(file);
-    _editState.pendingPhoto = { url: result.url, id: result.id };
-    preview.innerHTML = `
-      <div class="photo-preview" style="margin-top:8px;">
-        <img src="${escapeHtml(result.url)}" alt="New photo">
-        <span style="font-size:12px;">New photo ready to save</span>
-      </div>
-    `;
+    for (const file of toUpload) {
+      const result = await apiUploadPhoto(file);
+      _editState.editPhotos.push({ url: result.url, id: result.id, isNew: true });
+      document.getElementById('edit-photo-gallery').innerHTML = renderEditPhotoGallery();
+    }
+    toast(`${toUpload.length} photo${toUpload.length === 1 ? '' : 's'} attached — Save to apply`);
   } catch (err) {
     console.error(err);
-    preview.innerHTML = `<div style="color:var(--danger); font-size:12px; margin-top:8px;">Photo upload failed: ${escapeHtml(err.message || 'unknown error')}</div>`;
+    toast('Photo upload failed: ' + (err.message || 'unknown'), true);
   }
+  event.target.value = '';
 }
 
 async function saveEdit() {
@@ -883,10 +1003,12 @@ async function saveEdit() {
   if (newPriority !== gap.priority) changes.priority = newPriority;
   if (newStopper !== (gap.isStopper || '')) changes.isStopper = newStopper;
   if (newDomain !== gap.domain) changes.domain = newDomain;
-  if (_editState.pendingPhoto) {
-    changes.photoUrl = _editState.pendingPhoto.url;
-    changes.photoId = _editState.pendingPhoto.id;
-  }
+
+  // v15: compare working photo set vs original
+  const newPhotoUrl = serializePhotos(_editState.editPhotos.map(p => p.url));
+  const newPhotoId  = serializePhotos(_editState.editPhotos.map(p => p.id));
+  if (newPhotoUrl !== (gap.photoUrl || '')) changes.photoUrl = newPhotoUrl;
+  if (newPhotoId !== (gap.photoId || ''))  changes.photoId  = newPhotoId;
 
   if (Object.keys(changes).length === 0) {
     toast('No changes to save');
@@ -1080,6 +1202,7 @@ function renderInbox() {
   if (filter === 'mine') items = items.filter(g => g.assignedTo && g.assignedTo === myLabel);
   else if (filter === 'unassigned') items = items.filter(g => !g.assignedTo);
   else if (filter === 'stoppers') items = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX');
+  else if (filter === 'stoppers-no-date') items = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX' && !g.due);
   else if (filter !== 'all') items = items.filter(g => g.domain === filter);
 
   if (items.length === 0) {
@@ -1105,7 +1228,18 @@ function renderInbox() {
         </div>
         ${leader ? `<div class="leader-line"><i class="ti ti-id-badge-2"></i> Workstream lead: <strong>${escapeHtml(leader.name)}</strong>${leader.staffId ? ` (${escapeHtml(leader.staffId)})` : ''}</div>` : '<div class="leader-line missing"><i class="ti ti-alert-triangle"></i> No workstream lead set — see Leaders tab</div>'}
         <div style="font-size:14px; margin-bottom:10px;">${escapeHtml(g.text)}</div>
-        ${g.photoUrl ? `<div class="inbox-photo"><a href="${escapeHtml(g.photoUrl)}" target="_blank"><img src="${escapeHtml(g.photoUrl)}" alt="Photo" referrerpolicy="no-referrer"></a></div>` : ''}
+        ${(function(){
+          const urls = parsePhotos(g.photoUrl);
+          if (urls.length === 0) return '';
+          return `<div class="inbox-photo">
+            ${urls.map(u => {
+              // Extract Drive file ID from URL to build a reliable thumbnail URL
+              const m = u.match(/[?&]id=([^&]+)/);
+              const thumbUrl = m ? `https://drive.google.com/thumbnail?id=${m[1]}&sz=w300` : u;
+              return `<a href="${escapeHtml(u)}" target="_blank"><img src="${escapeHtml(thumbUrl)}" alt="Photo" referrerpolicy="no-referrer" onerror="this.style.display='none';"></a>`;
+            }).join('')}
+          </div>`;
+        })()}
         <div class="inbox-fields">
           <div>
             <label>Owner</label>
@@ -1153,6 +1287,17 @@ function renderInbox() {
 function setInboxFilter(f) { state.inboxFilter = f; render(); }
 function setSourceFilter(s) { state.sourceFilter = s; state.inboxFilter = 'all'; render(); }
 function setShowDeleted(v) { state.showDeleted = !!v; state.inboxFilter = 'all'; render(); }
+
+// v13.2: Click a scorecard on dashboard → jump to Team Inbox filtered to that workstream
+function jumpToWorkstreamInbox(domainId) {
+  setTab('inbox');
+  setTimeout(() => {
+    state.sourceFilter = 'all';
+    state.showDeleted = false;
+    state.inboxFilter = domainId;
+    render();
+  }, 50);
+}
 
 async function saveResponse(id) {
   if (!state.currentUser) { promptForIdentity(); return; }
@@ -1360,6 +1505,184 @@ function workstreamScorecard(d, filtered) {
   };
 }
 
+// v14: Day-1 stopper Gantt — visualizes stopper target dates against a timeline ending at Day 0.
+// Day 0 is configurable via small input in the UI; persisted to localStorage.
+function getDay0() {
+  try {
+    const saved = localStorage.getItem('almathar_day0');
+    if (saved) return saved;
+  } catch (e) {}
+  // default: 30 days from today
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  return d.toISOString().slice(0, 10);
+}
+function setDay0(value) {
+  try { localStorage.setItem('almathar_day0', value); } catch (e) {}
+  render();
+}
+
+function renderStopperGantt(filtered) {
+  const day0 = getDay0();
+  const today = state.currentDate;
+  const stoppers = filtered.filter(g => g.isStopper === 'YES' && g.status !== 'FX' && g.status !== 'DEL');
+  if (stoppers.length === 0) return '';
+
+  // Split into dated and undated
+  const withDate = stoppers.filter(g => g.due);
+  const withoutDate = stoppers.filter(g => !g.due);
+
+  // Sort dated by date ascending
+  withDate.sort((a, b) => a.due.localeCompare(b.due));
+
+  // Timeline span: from today to day0 (or from earliest stopper due if it's before today)
+  const todayMs = new Date(today).getTime();
+  const day0Ms = new Date(day0).getTime();
+  let minMs = todayMs;
+  let maxMs = day0Ms;
+  withDate.forEach(g => {
+    const ms = new Date(g.due).getTime();
+    if (ms < minMs) minMs = ms;
+    if (ms > maxMs) maxMs = ms;
+  });
+  // Add 10% padding on the right side after day0 if needed
+  if (maxMs < day0Ms) maxMs = day0Ms;
+  const spanMs = Math.max(maxMs - minMs, 86400000); // at least 1 day
+
+  // Build column-week markers
+  const weekMarkers = [];
+  const oneWeek = 7 * 86400000;
+  let cursor = minMs;
+  while (cursor <= maxMs) {
+    const pct = ((cursor - minMs) / spanMs) * 100;
+    const date = new Date(cursor);
+    weekMarkers.push({ pct, label: `${date.getDate()}/${date.getMonth() + 1}` });
+    cursor += oneWeek;
+  }
+
+  // Position of today marker
+  const todayPct = ((todayMs - minMs) / spanMs) * 100;
+  // Position of Day 0
+  const day0Pct = ((day0Ms - minMs) / spanMs) * 100;
+
+  return `
+    <div class="chart-card" style="margin-bottom:1rem;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+        <h4 style="margin:0;">Day-1 stopper timeline</h4>
+        <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-2);">
+          <span>Day 0:</span>
+          <input type="date" value="${day0}" onchange="setDay0(this.value)" style="font-size:12px; padding:4px 8px; width:auto;">
+        </div>
+      </div>
+
+      ${withoutDate.length > 0 ? `
+        <div class="gantt-warning" onclick="jumpToStoppersMissingDates()">
+          <i class="ti ti-alert-circle"></i>
+          <span><strong>${withoutDate.length}</strong> stopper${withoutDate.length === 1 ? '' : 's'} without target dates — click to set them.</span>
+          <i class="ti ti-chevron-right" style="margin-left:auto;"></i>
+        </div>
+      ` : ''}
+
+      <div class="gantt-wrap">
+        <div class="gantt-timeline-head">
+          ${weekMarkers.map(w => `<div class="gantt-tick" style="left: ${w.pct}%;">${w.label}</div>`).join('')}
+        </div>
+        <div class="gantt-rows">
+          ${withDate.map(g => {
+            const ms = new Date(g.due).getTime();
+            const pct = ((ms - minMs) / spanMs) * 100;
+            const overdue = ms < todayMs;
+            const beyond = ms > day0Ms;
+            let cls = 'gantt-bar-ok';
+            if (overdue) cls = 'gantt-bar-overdue';
+            else if (beyond) cls = 'gantt-bar-late';
+            const d = DOMAINS.find(x => x.id === g.domain) || { short: g.domain, icon: 'ti-help', ramp: 'gray' };
+            return `
+              <div class="gantt-row" onclick="openEditModal('${g.id}')" title="${escapeHtml(g.text)}\nDue: ${g.due}">
+                <div class="gantt-row-label">
+                  <span class="pill c-${d.ramp}" style="font-size:10px; padding:2px 6px;"><i class="ti ${d.icon}"></i>${d.short}</span>
+                  <span class="gantt-row-text">${escapeHtml(g.text.length > 60 ? g.text.slice(0, 57) + '…' : g.text)}</span>
+                </div>
+                <div class="gantt-row-track">
+                  <div class="gantt-today-line" style="left: ${todayPct}%;" title="Today"></div>
+                  <div class="gantt-day0-line" style="left: ${day0Pct}%;" title="Day 0"></div>
+                  <div class="gantt-bar ${cls}" style="left: ${pct}%;">
+                    <span class="gantt-bar-date">${g.due.slice(5)}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div class="gantt-legend">
+          <span><i class="ti ti-square-filled" style="color:var(--success);"></i> On track</span>
+          <span><i class="ti ti-square-filled" style="color:var(--danger);"></i> Overdue</span>
+          <span><i class="ti ti-square-filled" style="color:var(--warn);"></i> After Day 0</span>
+          <span style="margin-left:auto;">Click any bar to edit the stopper</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function jumpToStoppersMissingDates() {
+  setTab('inbox');
+  setTimeout(() => {
+    state.sourceFilter = 'all';
+    state.showDeleted = false;
+    state.inboxFilter = 'stoppers-no-date';
+    render();
+  }, 50);
+}
+
+// v14: Mini-Gantt strip inside a scorecard — shows just THIS workstream's open stoppers
+// as dots on a single horizontal timeline from today to Day 0.
+function renderMiniGantt(domainId, filtered) {
+  const day0 = getDay0();
+  const today = state.currentDate;
+  const todayMs = new Date(today).getTime();
+  const day0Ms = new Date(day0).getTime();
+  const stoppers = filtered.filter(g =>
+    g.domain === domainId && g.isStopper === 'YES' && g.status !== 'FX' && g.status !== 'DEL'
+  );
+  if (stoppers.length === 0) return '';
+
+  const withDate = stoppers.filter(g => g.due);
+  const noDateCount = stoppers.length - withDate.length;
+
+  // Timeline span: today to day0, extended if any due dates fall outside that range
+  let minMs = todayMs;
+  let maxMs = day0Ms;
+  withDate.forEach(g => {
+    const ms = new Date(g.due).getTime();
+    if (ms < minMs) minMs = ms;
+    if (ms > maxMs) maxMs = ms;
+  });
+  const spanMs = Math.max(maxMs - minMs, 86400000);
+  const todayPct = ((todayMs - minMs) / spanMs) * 100;
+  const day0Pct = ((day0Ms - minMs) / spanMs) * 100;
+
+  return `
+    <div class="mini-gantt" title="Stopper target dates · today (blue) → Day 0 (red)">
+      <div class="mini-gantt-track">
+        <div class="mini-gantt-today" style="left: ${todayPct}%;"></div>
+        <div class="mini-gantt-day0" style="left: ${day0Pct}%;"></div>
+        ${withDate.map(g => {
+          const ms = new Date(g.due).getTime();
+          const pct = ((ms - minMs) / spanMs) * 100;
+          let cls = 'mg-ok';
+          if (ms < todayMs) cls = 'mg-overdue';
+          else if (ms > day0Ms) cls = 'mg-late';
+          return `<div class="mini-gantt-dot ${cls}" style="left: ${pct}%;" title="${escapeHtml(g.text.slice(0, 60))} · due ${g.due}"></div>`;
+        }).join('')}
+      </div>
+      <div class="mini-gantt-foot">
+        <span>${withDate.length}/${stoppers.length} stopper${stoppers.length === 1 ? '' : 's'} with target date${noDateCount > 0 ? ` · <span class="mg-warn">${noDateCount} missing</span>` : ''}</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderDashboard() {
   destroyCharts();
   const el = document.getElementById('view-dashboard');
@@ -1474,10 +1797,41 @@ function renderDashboard() {
       </div>
     ` : ''}
 
-    <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Workstream scorecards</div>
+    <div style="display:flex; align-items:center; justify-content:space-between; margin: 1.5rem 0 8px; flex-wrap:wrap; gap:10px;">
+      <div style="font-size:14px; font-weight:500;">Workstream scorecards</div>
+      <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-2);">
+        <span><i class="ti ti-target"></i> Day 0:</span>
+        <input type="date" value="${getDay0()}" onchange="setDay0(this.value)" style="font-size:12px; padding:4px 8px; width:auto;">
+      </div>
+    </div>
+    ${(function(){
+      const noDate = filtered.filter(g => g.isStopper === 'YES' && g.status !== 'FX' && g.status !== 'DEL' && !g.due).length;
+      return noDate > 0 ? `
+        <div class="gantt-warning" onclick="jumpToStoppersMissingDates()" style="margin-bottom:10px;">
+          <i class="ti ti-alert-circle"></i>
+          <span><strong>${noDate}</strong> Day-1 stopper${noDate === 1 ? '' : 's'} without target date${noDate === 1 ? '' : 's'} — click to set them so they appear on the timeline strips below.</span>
+          <i class="ti ti-chevron-right" style="margin-left:auto;"></i>
+        </div>
+      ` : '';
+    })()}
     <div class="scorecard-grid">
-      ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => `
-        <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}">
+      ${scorecards.length === 0 ? '<div class="empty">No data yet.</div>' : scorecards.map(s => {
+        // v14: embedded readiness bar inside scorecard
+        const stopperOpen = filtered.filter(g => g.domain === s.id && g.status === 'NF' && g.isStopper === 'YES').length;
+        const nonStopperOpen = s.open - stopperOpen;
+        const segs = [
+          { value: s.fixed,        cls: 'seg-fixed',    label: 'Fixed' },
+          { value: stopperOpen,    cls: 'seg-stopper',  label: 'Stoppers open' },
+          { value: nonStopperOpen, cls: 'seg-open',     label: 'Open' },
+          { value: s.deferred,     cls: 'seg-deferred', label: 'Deferred' }
+        ];
+        const liveTotal = s.fixed + s.open;
+        const readiness = liveTotal > 0 ? Math.round(s.fixed / liveTotal * 100) : 0;
+        let readinessClass = 'readiness-red';
+        if (readiness >= 80) readinessClass = 'readiness-green';
+        else if (readiness >= 50) readinessClass = 'readiness-amber';
+        return `
+        <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
           <div class="scorecard-head">
             <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.label}</span>
             ${s.stoppers > 0 ? `<span class="pill c-red"><i class="ti ti-flag-3"></i> ${s.stoppers}</span>` : ''}
@@ -1488,13 +1842,21 @@ function renderDashboard() {
             <div><div class="sc-lbl">Fixed</div><div class="sc-num" style="color:var(--success);">${s.fixed}</div></div>
             <div><div class="sc-lbl">% fixed</div><div class="sc-num">${s.closurePct}%</div></div>
           </div>
+          <div class="readiness-bar" style="margin: 6px 0 10px;" title="Readiness: ${readiness}% — Fixed:${s.fixed} · Stoppers open:${stopperOpen} · Open:${nonStopperOpen} · Deferred:${s.deferred}">
+            ${segs.map(seg => seg.value > 0
+              ? `<div class="readiness-seg ${seg.cls}" style="flex: ${seg.value};" title="${seg.label}: ${seg.value}"></div>`
+              : ''
+            ).join('')}
+          </div>
+          ${stopperOpen > 0 ? renderMiniGantt(s.id, filtered) : ''}
           <div class="scorecard-meta">
             ${s.leader ? `<span><i class="ti ti-id-badge-2"></i> ${escapeHtml(s.leader.name)}</span>` : '<span class="missing"><i class="ti ti-alert-triangle"></i> no lead</span>'}
             ${s.noOwner > 0 ? `<span class="missing"><i class="ti ti-alert-circle"></i> ${s.noOwner} no owner</span>` : ''}
             ${s.avgDays !== null ? `<span><i class="ti ti-clock"></i> avg ${s.avgDays}d to fix</span>` : ''}
           </div>
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
 
     <div style="font-size:14px; font-weight:500; margin: 1rem 0 8px;">Open action items (stoppers first, then RAG)</div>
@@ -1523,7 +1885,7 @@ function renderDashboard() {
                 <td><span class="pill source-${g.source || 'sim'}" style="font-size:10px;">${g.source === 'snag' ? 'Snag' : 'Sim'}</span></td>
                 <td>${g.isStopper === 'YES' ? '<i class="ti ti-flag-3" style="color:var(--danger);" title="Day-1 stopper"></i>' : ''}</td>
                 <td><i class="ti ${d.icon}"></i> ${d.short}</td>
-                <td>${escapeHtml(g.text)}${g.photoUrl ? ' <i class="ti ti-photo" style="color:var(--text-2);"></i>' : ''}</td>
+                <td>${escapeHtml(g.text)}${parsePhotos(g.photoUrl).length > 0 ? ' <i class="ti ti-photo" style="color:var(--text-2);" title="' + parsePhotos(g.photoUrl).length + ' photo(s)"></i>' : ''}</td>
                 <td>${escapeHtml(g.assignedTo ? g.assignedTo.split('(')[0].trim() : '—')}</td>
                 <td>${g.leader && escalate ? `<strong style="color:var(--danger);">${escapeHtml(g.leader.name)}</strong>` : (g.leader ? escapeHtml(g.leader.name) : '<span style="color:var(--text-3);">no lead</span>')}</td>
                 <td>${g.ageDays !== null ? g.ageDays + 'd' : '—'}</td>
@@ -1595,11 +1957,17 @@ function renderDashboard() {
     }
   }
 
-  // 2. Horizontal bar — open gaps by workstream (only ones with open > 0)
+  // 2. Horizontal bar — open gaps by workstream (all workstreams that have any open gaps)
   const openByWs = scorecards.filter(s => s.open > 0);
   if (openByWs.length > 0) {
     const ctx = document.getElementById('chart-byws');
     if (ctx) {
+      // Grow the canvas vertically so every workstream gets a visible row.
+      // ~32px per workstream + 60px for legend + padding.
+      const dynHeight = Math.max(240, openByWs.length * 32 + 80);
+      ctx.parentElement.style.height = dynHeight + 'px';
+      ctx.style.maxHeight = 'none';
+
       _charts.byWorkstream = new Chart(ctx.getContext('2d'), {
         type: 'bar',
         data: {
@@ -1627,6 +1995,26 @@ function renderDashboard() {
           },
           plugins: {
             legend: { position: 'bottom', labels: { font: baseFont, padding: 12, boxWidth: 12 } }
+          },
+          // v13.2: draw the open count at the end of each bar
+          animation: {
+            onComplete: function () {
+              const chart = this;
+              const cctx = chart.ctx;
+              cctx.font = baseFont.size + 'px ' + baseFont.family;
+              cctx.fillStyle = colors.text;
+              cctx.textBaseline = 'middle';
+              cctx.textAlign = 'left';
+              chart.data.datasets.forEach((dataset, di) => {
+                const meta = chart.getDatasetMeta(di);
+                meta.data.forEach((bar, i) => {
+                  const value = dataset.data[i];
+                  if (value > 0) {
+                    cctx.fillText(value, bar.x + 4, bar.y);
+                  }
+                });
+              });
+            }
           }
         }
       });
@@ -1658,6 +2046,25 @@ function renderDashboard() {
           },
           plugins: {
             legend: { display: false }
+          },
+          animation: {
+            onComplete: function () {
+              const chart = this;
+              const cctx = chart.ctx;
+              cctx.font = '600 ' + baseFont.size + 'px ' + baseFont.family;
+              cctx.fillStyle = colors.danger;
+              cctx.textBaseline = 'bottom';
+              cctx.textAlign = 'center';
+              chart.data.datasets.forEach((dataset, di) => {
+                const meta = chart.getDatasetMeta(di);
+                meta.data.forEach((bar, i) => {
+                  const value = dataset.data[i];
+                  if (value > 0) {
+                    cctx.fillText(value, bar.x, bar.y - 4);
+                  }
+                });
+              });
+            }
           }
         }
       });
