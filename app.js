@@ -344,15 +344,25 @@ async function apiClearLeader(domain) {
 
 async function apiUploadPhoto(file) {
   if (!isConfigured()) throw new Error('Not configured');
-  const compressed = await compressImage(file, 1280, 0.75);
-  const base64 = await fileToBase64(compressed);
+  // v15.2: try to compress; if the browser can't decode the source image
+  // (e.g. HEIC from iPhone) fall back to uploading the original file as-is.
+  let payload;
+  try {
+    const compressed = await compressImage(file, 1280, 0.75);
+    const base64 = await fileToBase64(compressed);
+    payload = { mimeType: compressed.type || 'image/jpeg', base64, filename: file.name };
+  } catch (e) {
+    console.warn('compressImage failed, uploading original:', e);
+    const base64 = await fileToBase64(file);
+    payload = { mimeType: file.type || 'image/jpeg', base64, filename: file.name };
+  }
   const res = await fetch(window.API_URL, {
     method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
       action: 'uploadPhoto',
-      filename: file.name || ('photo_' + Date.now() + '.jpg'),
-      mimeType: compressed.type || 'image/jpeg',
-      base64,
+      filename: payload.filename || ('photo_' + Date.now() + '.jpg'),
+      mimeType: payload.mimeType,
+      base64: payload.base64,
       user: userLabel(state.currentUser) || 'web'
     })
   });
