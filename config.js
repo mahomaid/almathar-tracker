@@ -2,7 +2,7 @@
 // Both values below are read from this file by the app at startup.
 
 // (1) Apps Script /exec URL
-window.API_URL = 'https://script.google.com/macros/s/AKfycbyydjK2Qyij1DFR1Tck6J4airS3Z2aH1migEORYZvdVGQtLl_WO-nNYPVe3z-6ujrAh/exec';
+window.API_URL = 'AKfycbyydjK2Qyij1DFR1Tck6J4airS3Z2aH1migEORYZvdVGQtLl_WO-nNYPVe3z-6ujrAh';
 // (2) Shared access password
 // Pick something memorable but not obvious. Share verbally / via WhatsApp, not over email.
 // To rotate: change the value here, redeploy, and tell the team the new password.
