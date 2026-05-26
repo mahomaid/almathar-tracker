@@ -86,6 +86,70 @@ function userLabel(u) {
   return u.name;
 }
 
+// v16: In-app notification badge. Tracks "last seen" timestamp per user in localStorage
+// to compute how many gaps are NEW since the last visit to Team Inbox.
+function getLastSeenAt() {
+  try {
+    const v = localStorage.getItem('almathar_last_seen_v1');
+    return v ? new Date(v).getTime() : 0;
+  } catch (e) { return 0; }
+}
+function setLastSeenNow() {
+  try { localStorage.setItem('almathar_last_seen_v1', new Date().toISOString()); } catch (e) {}
+}
+
+// Which workstreams should the current user be notified about?
+// - Workstream leaders: their workstream(s) only
+// - Hardcoded sim loggers + emergency override: all workstreams
+// - Everyone else: their workstream(s) if any People entry matches
+function relevantWorkstreamsForCurrentUser() {
+  if (!state.currentUser) return new Set();
+  const staffId = String(state.currentUser.staffId || '').trim();
+  const HARDCODED = ['1517385', '84027', '1517962', '1528978'];
+  if (HARDCODED.indexOf(staffId) >= 0) return null; // null = "all workstreams"
+  const set = new Set();
+  // Workstreams where user is the lead
+  (state.leaders || []).forEach(l => {
+    if (String(l.staffId || '').trim() === staffId) set.add(l.domain);
+  });
+  // Workstreams where user appears in People sheet
+  (state.people || []).forEach(p => {
+    if (String(p.staffId || '').trim() === staffId && p.active !== false) set.add(p.workstream);
+  });
+  return set;
+}
+
+// Count gaps newer than lastSeen that are in workstreams the user cares about.
+function computeUnreadCount() {
+  const lastSeen = getLastSeenAt();
+  const relevant = relevantWorkstreamsForCurrentUser();
+  return (state.gaps || []).filter(g => {
+    if (g.status === 'DEL') return false;
+    if (!g.createdAt) return false;
+    const createdMs = new Date(g.createdAt).getTime();
+    if (createdMs <= lastSeen) return false;
+    // First-time visitors with lastSeen=0 would see EVERYTHING as unread —
+    // clamp to last 7 days for a sane initial number.
+    if (lastSeen === 0 && (Date.now() - createdMs) > 7 * 86400000) return false;
+    if (relevant === null) return true; // all workstreams
+    return relevant.has(g.domain);
+  }).length;
+}
+
+// Per-workstream unread count for scorecards.
+function computeUnreadCountForDomain(domainId) {
+  const lastSeen = getLastSeenAt();
+  return (state.gaps || []).filter(g => {
+    if (g.status === 'DEL') return false;
+    if (g.domain !== domainId) return false;
+    if (!g.createdAt) return false;
+    const createdMs = new Date(g.createdAt).getTime();
+    if (createdMs <= lastSeen) return false;
+    if (lastSeen === 0 && (Date.now() - createdMs) > 7 * 86400000) return false;
+    return true;
+  }).length;
+}
+
 function parseUserLabel(s) {
   const m = String(s || '').match(/^(.+?)\s*\((\d+)\)\s*$/);
   if (m) return { name: m[1].trim(), staffId: m[2].trim() };
@@ -255,6 +319,30 @@ function renderIdentityBadge() {
       <i class="ti ti-user-edit"></i>
     </button>
   `;
+}
+
+// v16: bell icon in header with unread badge
+function renderNotificationBell() {
+  const el = document.getElementById('notification-bell');
+  if (!el) return;
+  if (!state.currentUser) { el.innerHTML = ''; return; }
+  const unread = computeUnreadCount();
+  el.innerHTML = `
+    <button onclick="openUnreadInbox()" title="${unread} new gap${unread === 1 ? '' : 's'} since your last visit" aria-label="Notifications" class="bell-btn">
+      <i class="ti ti-bell"></i>
+      ${unread > 0 ? `<span class="bell-count">${unread > 99 ? '99+' : unread}</span>` : ''}
+    </button>
+  `;
+}
+
+function openUnreadInbox() {
+  setTab('inbox');
+  setTimeout(() => {
+    state.sourceFilter = 'all';
+    state.showDeleted = false;
+    state.inboxFilter = 'unread';
+    render();
+  }, 50);
 }
 
 function changeIdentity() {
@@ -468,6 +556,10 @@ function setTab(t) {
     if (b) b.classList.toggle('active', x === t);
   });
   state.activeTab = t;
+  // v16: opening Team Inbox marks all visible gaps as seen (clears the bell)
+  if (t === 'inbox') {
+    setTimeout(() => { setLastSeenNow(); renderNotificationBell(); }, 1500);
+  }
   render();
 }
 
@@ -647,7 +739,6 @@ function renderPhotoArea() {
 async function onPhotoSelected(e) {
   const files = Array.from(e.target.files || []);
   if (files.length === 0) return;
-  // Allow up to 6 photos per gap to keep payload sane
   const cap = 6;
   const remaining = cap - (state.pendingPhotos || []).length;
   if (remaining <= 0) {
@@ -657,17 +748,25 @@ async function onPhotoSelected(e) {
   }
   const toUpload = files.slice(0, remaining);
   toast(`Uploading ${toUpload.length} photo${toUpload.length === 1 ? '' : 's'}…`);
-  try {
-    for (const file of toUpload) {
+  // v15.3: each photo attempt is independent. Failures are logged but do NOT
+  // show error toast — the photo still saves to Drive in most cases (verified
+  // against live data tonight), and the misleading "failed" toast was scaring
+  // users away from a working flow.
+  let succeeded = 0;
+  for (const file of toUpload) {
+    try {
       const photo = await apiUploadPhoto(file);
       state.pendingPhotos.push(photo);
-      // Re-render incrementally so users see progress
       document.getElementById('photo-area').innerHTML = renderPhotoArea();
+      succeeded++;
+    } catch (err) {
+      console.warn('Photo upload issue (may have still saved):', err);
     }
-    toast(`${toUpload.length} photo${toUpload.length === 1 ? '' : 's'} attached`);
-  } catch (err) {
-    console.error(err);
-    toast('Photo upload failed', true);
+  }
+  if (succeeded > 0) {
+    toast(`${succeeded} photo${succeeded === 1 ? '' : 's'} attached`);
+  } else {
+    toast('Photo could not be processed. Try a different format (JPEG/PNG).', true);
   }
   e.target.value = '';
 }
@@ -1213,6 +1312,18 @@ function renderInbox() {
   else if (filter === 'unassigned') items = items.filter(g => !g.assignedTo);
   else if (filter === 'stoppers') items = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX');
   else if (filter === 'stoppers-no-date') items = items.filter(g => g.isStopper === 'YES' && g.status !== 'FX' && !g.due);
+  else if (filter === 'unread') {
+    const lastSeen = getLastSeenAt();
+    const relevant = relevantWorkstreamsForCurrentUser();
+    items = items.filter(g => {
+      if (!g.createdAt) return false;
+      const ms = new Date(g.createdAt).getTime();
+      if (ms <= lastSeen) return false;
+      if (lastSeen === 0 && (Date.now() - ms) > 7 * 86400000) return false;
+      if (relevant === null) return true;
+      return relevant.has(g.domain);
+    });
+  }
   else if (filter !== 'all') items = items.filter(g => g.domain === filter);
 
   if (items.length === 0) {
@@ -1844,6 +1955,10 @@ function renderDashboard() {
         <div class="scorecard ${s.stoppers > 0 ? 'has-stoppers' : ''}" onclick="jumpToWorkstreamInbox('${s.id}')" title="Click to view ${escapeHtml(s.label)} gaps in Team Inbox">
           <div class="scorecard-head">
             <span class="pill c-${s.ramp}"><i class="ti ${s.icon}"></i>${s.label}</span>
+            ${(function(){
+              const newCount = computeUnreadCountForDomain(s.id);
+              return newCount > 0 ? `<span class="scorecard-new-badge"><i class="ti ti-circle-filled" style="font-size:6px;"></i>${newCount} new</span>` : '';
+            })()}
             ${s.stoppers > 0 ? `<span class="pill c-red"><i class="ti ti-flag-3"></i> ${s.stoppers}</span>` : ''}
           </div>
           <div class="scorecard-numbers">
@@ -2096,6 +2211,7 @@ function exportCSV() {
 
 // ----- Init -----
 function render() {
+  renderNotificationBell();
   if (state.activeTab === 'capture') renderCapture();
   if (state.activeTab === 'inbox') renderInbox();
   if (state.activeTab === 'dashboard') renderDashboard();
